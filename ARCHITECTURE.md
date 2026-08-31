@@ -133,6 +133,27 @@ completion, DevExpress-FilterEditor-like in *behavior* — built in-house in pur
 WPF, no third-party control) is just a front-end that produces this AST; plain
 text search is the degenerate case.
 
+## App registration (Microsoft identity)
+
+Registered in the personal tenant `example.onmicrosoft.com` (Entra ID Free;
+admin accounts: admin@example.onmicrosoft.com + personal@example.net as
+guest Global Admin). Client IDs are public by design — safe to commit.
+
+- Application (client) ID: `84d7958a-9db1-4cde-b670-5330d2f8422e`
+- Home tenant ID: `bb679c17-b553-48c6-a746-da68c1b22307`
+- Display name: `EmailClientForDevs` (placeholder — final product name TBD)
+- Supported accounts: any Entra tenant + personal Microsoft accounts
+- Platform: public client (mobile & desktop); redirect URIs: `http://localhost`,
+  `https://login.microsoftonline.com/common/oauth2/nativeclient`, LiveSDK,
+  `msal{clientid}://auth`, and the WAM broker
+  (`ms-appx-web://microsoft.aad.brokerplugin/{clientid}`); public client flows
+  enabled (device code available).
+- Delegated Graph permissions: Mail.ReadWrite, Mail.ReadWrite.Shared,
+  Mail.Send, Mail.Send.Shared, offline_access, User.Read.
+- Unverified publisher for now: personal MSAs can consent; org tenants may
+  require admin consent (John is admin on the target work tenant). Publisher
+  verification (MPN + example.com domain verification) is a future task.
+
 ## Threading
 
 Conversation keys are computed at ingest from References/In-Reply-To

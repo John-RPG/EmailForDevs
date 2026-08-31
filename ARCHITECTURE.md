@@ -141,7 +141,10 @@ guest Global Admin). Client IDs are public by design — safe to commit.
 
 - Application (client) ID: `84d7958a-9db1-4cde-b670-5330d2f8422e`
 - Home tenant ID: `bb679c17-b553-48c6-a746-da68c1b22307`
-- Display name: `EmailClientForDevs` (placeholder — final product name TBD)
+- Display name: `EmailClientForDevs` (placeholder). Product name: **eeeMail**
+  pinned as leading candidate (collision-checked clear; ASUS "Eee" dormant;
+  eeemail.com looked unclaimed but verify at a registrar before buying).
+  Rename the registration only when finalized.
 - Supported accounts: any Entra tenant + personal Microsoft accounts
 - Platform: public client (mobile & desktop); redirect URIs: `http://localhost`,
   `https://login.microsoftonline.com/common/oauth2/nativeclient`, LiveSDK,

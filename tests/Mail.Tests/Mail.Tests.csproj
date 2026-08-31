@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Mail.Core\Mail.Core.csproj" />
     <ProjectReference Include="..\..\src\Mail.Storage\Mail.Storage.csproj" />
+    <ProjectReference Include="..\..\src\Mail.Sync\Mail.Sync.csproj" />
   </ItemGroup>
 
 </Project>

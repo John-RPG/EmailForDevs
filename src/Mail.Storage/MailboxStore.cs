@@ -34,8 +34,10 @@ public static class MailboxStore
 
         var messageId = Insert(conn, tx, """
             INSERT INTO messages(folder_id, server_id, internet_message_id, conversation_key,
-                                 subject, sent_at, received_at, has_attachments, size, body_id, preview)
-            VALUES(@folder, @server, @imid, @ck, @subject, @sent, @recv, @att, @size, @body, @preview);
+                                 subject, sent_at, received_at, has_attachments, importance,
+                                 size, body_id, preview)
+            VALUES(@folder, @server, @imid, @ck, @subject, @sent, @recv, @att, @imp,
+                   @size, @body, @preview);
             """,
             ("@folder", folderId),
             ("@server", serverId),
@@ -45,6 +47,7 @@ public static class MailboxStore
             ("@sent", parsed.SentAt?.ToUnixTimeSeconds()),
             ("@recv", (receivedAt ?? parsed.SentAt)?.ToUnixTimeSeconds()),
             ("@att", parsed.HasAttachments ? 1 : 0),
+            ("@imp", parsed.Importance),
             ("@size", raw.Length),
             ("@body", bodyId),
             ("@preview", parsed.Preview));
@@ -218,6 +221,45 @@ public static class MailboxStore
             return null;
         return (BlobCodec.Decode(reader.GetString(0), (byte[])reader.GetValue(1), reader.GetInt32(2)),
                 reader.GetString(3));
+    }
+
+    public sealed record AttachmentRow(
+        long Id, string? FileName, string? ContentType, bool IsInline, long Size, bool HasContent);
+
+    public static List<AttachmentRow> GetAttachments(SqliteConnection conn, long messageId)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, file_name, content_type, is_inline, coalesce(size, 0), blob_id IS NOT NULL
+            FROM attachments WHERE message_id = @m ORDER BY is_inline, file_name;
+            """;
+        cmd.Parameters.AddWithValue("@m", messageId);
+        var rows = new List<AttachmentRow>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            rows.Add(new AttachmentRow(
+                reader.GetInt64(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.GetInt64(3) != 0,
+                reader.GetInt64(4),
+                reader.GetInt64(5) != 0));
+        return rows;
+    }
+
+    public static byte[]? GetAttachmentContent(SqliteConnection conn, long attachmentId)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT b.compression, b.content, b.size
+            FROM attachments att JOIN blobs b ON b.id = att.blob_id
+            WHERE att.id = @id;
+            """;
+        cmd.Parameters.AddWithValue("@id", attachmentId);
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read())
+            return null;
+        return BlobCodec.Decode(reader.GetString(0), (byte[])reader.GetValue(1), reader.GetInt32(2));
     }
 
     public static void SetMessageRead(SqliteConnection conn, long messageId, bool isRead) =>

@@ -52,6 +52,12 @@ public static class MimeMessageParser
             BodyText: bodyText,
             Preview: MakePreview(bodyText),
             HasAttachments: attachments.Any(a => !a.IsInline),
+            Importance: message.Importance switch
+            {
+                MessageImportance.High => 2,
+                MessageImportance.Low => 0,
+                _ => 1,
+            },
             Addresses: addresses,
             Attachments: attachments,
             Segments: MimeSegmenter.Segment(raw, message));

@@ -50,9 +50,13 @@ public partial class MainWindow : Window
     sealed record FolderNode(MailboxHandle Mailbox, long FolderId, string Name);
 
     public sealed record MessageRow(
-        object Mailbox, long Id, string? ServerId, string From, string FromName,
+        object Mailbox, long Id, string? ServerId, string Status, string From, string FromName,
         string FromAddress, string To, string Received, string SizeKb, double SizeVal,
         string Subject, bool IsUnread);
+
+    public sealed record AttachmentItem(
+        object Mailbox, long Id, string Name, string ContentType, string SizeKb,
+        string Inline, bool HasContent);
 
     public enum LogLevel { Debug, Verbose, Info, Warning, Error }
 
@@ -89,7 +93,6 @@ public partial class MainWindow : Window
     bool _syncRunning;
     bool _webViewReady;
     string? _currentHtml;
-    bool _previewDirty;
     MailboxHandle? _currentMailbox;
     long _currentMessageId;
 
@@ -323,6 +326,7 @@ public partial class MainWindow : Window
 
     const string RowSelect = """
         SELECT m.id, m.subject, m.received_at, m.size, m.is_read, m.server_id,
+               m.has_attachments, m.is_flagged, m.importance,
                fa.display_name, fa.email,
                (SELECT a2.email
                 FROM message_addresses ma2 JOIN addresses a2 ON a2.id = ma2.address_id
@@ -349,17 +353,22 @@ public partial class MainWindow : Window
         {
             while (reader.Read())
             {
-                var name = reader.IsDBNull(6) ? "" : reader.GetString(6);
-                var email = reader.IsDBNull(7) ? "" : reader.GetString(7);
+                var name = reader.IsDBNull(9) ? "" : reader.GetString(9);
+                var email = reader.IsDBNull(10) ? "" : reader.GetString(10);
                 var sizeVal = reader.IsDBNull(3) ? 0 : reader.GetInt64(3) / 1024.0;
+                var status =
+                    (reader.GetInt64(6) != 0 ? "📎" : "") +
+                    (reader.GetInt64(7) != 0 ? "⚑" : "") +
+                    (reader.GetInt64(8) switch { 2 => "❗", 0 => "▼", _ => "" });
                 rows.Add(new MessageRow(
                     mailbox,
                     reader.GetInt64(0),
                     reader.IsDBNull(5) ? null : reader.GetString(5),
+                    Status: status,
                     From: string.IsNullOrEmpty(name) || name == email ? email : $"{name} <{email}>",
                     FromName: name == email ? "" : name,
                     FromAddress: email,
-                    To: reader.IsDBNull(8) ? "" : reader.GetString(8),
+                    To: reader.IsDBNull(11) ? "" : reader.GetString(11),
                     Received: reader.IsDBNull(2)
                         ? ""
                         : DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2))
@@ -598,9 +607,36 @@ public partial class MainWindow : Window
             : Encoding.Latin1.GetString(raw, 0, RawDisplayCap) +
               $"{Environment.NewLine}… (truncated for display: {raw.Length:N0} bytes total)";
 
-        _previewDirty = true;
-        if (ReadingTabs.SelectedIndex == 0)
-            _ = RenderPreviewAsync();
+        AttachmentList.ItemsSource = MailboxStore.GetAttachments(mailbox.Db, messageId)
+            .Select(a => new AttachmentItem(
+                mailbox, a.Id, a.FileName ?? "(unnamed)", a.ContentType ?? "",
+                (a.Size / 1024.0).ToString("N0"), a.IsInline ? "yes" : "", a.HasContent))
+            .ToList();
+
+        _ = RenderPreviewAsync(); // preview pane is always visible now
+    }
+
+    void OnAttachmentSave(object sender, MouseButtonEventArgs e)
+    {
+        if (AttachmentList.SelectedItem is not AttachmentItem item ||
+            item.Mailbox is not MailboxHandle mailbox)
+            return;
+        if (!item.HasContent)
+        {
+            Log(LogLevel.Warning, $"Attachment '{item.Name}' has no stored content.");
+            return;
+        }
+        var dialog = new Microsoft.Win32.SaveFileDialog { FileName = item.Name };
+        if (dialog.ShowDialog(this) != true)
+            return;
+        var content = MailboxStore.GetAttachmentContent(mailbox.Db, item.Id);
+        if (content is null)
+        {
+            Log(LogLevel.Warning, $"Attachment '{item.Name}' content missing.");
+            return;
+        }
+        File.WriteAllBytes(dialog.FileName, content);
+        Log($"Saved attachment '{item.Name}' ({content.Length / 1024.0:N0} KB).");
     }
 
     static int FindHeaderEnd(byte[] raw)
@@ -616,18 +652,11 @@ public partial class MainWindow : Window
 
     // ---- rendered preview (locked-down WebView2) -----------------------------
 
-    void OnReadingTabChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (ReferenceEquals(e.Source, ReadingTabs) && ReadingTabs.SelectedIndex == 0 && _previewDirty)
-            _ = RenderPreviewAsync();
-    }
-
     async Task RenderPreviewAsync()
     {
         try
         {
             await EnsurePreviewAsync();
-            _previewDirty = false;
             var html = _currentHtml;
             if (html is null)
             {

@@ -76,7 +76,13 @@ Console.WriteLine($"Signed in as {upn}");
 var dek = EnsureMailboxRegistered(appDb, upn, out var mailboxDbPath);
 using var mailboxDb = MailboxDatabase.Open(mailboxDbPath, dek);
 
-if (args.Length > 0)
+if (args.Contains("bench", StringComparer.OrdinalIgnoreCase))
+{
+    await RunBenchmarkAsync(auth, signIn);
+    return;
+}
+
+if (args.Length > 0 && int.TryParse(args[0], out _))
 {
     using (var update = appDb.CreateCommand())
     {
@@ -145,6 +151,70 @@ using (var cmd = mailboxDb.CreateCommand())
 }
 
 return;
+
+// Pure network benchmark: downloads the same message set at several concurrency
+// levels, discarding bytes. Touches no DB or delta state. Repeats C=1 at the end
+// to expose server-side drift during the run.
+static async Task RunBenchmarkAsync(GraphAuthenticator auth, AuthenticationResult signIn)
+{
+    var graph = new GraphServiceClient(
+        new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, signIn)));
+    Console.WriteLine("Listing sample messages from Inbox…");
+    var ids = new List<string>();
+    var page = await graph.Me.MailFolders["inbox"].Messages.GetAsync(rc =>
+    {
+        rc.QueryParameters.Top = 120;
+        rc.QueryParameters.Select = ["id"];
+        rc.QueryParameters.Orderby = ["receivedDateTime desc"];
+    });
+    while (page is not null && ids.Count < 120)
+    {
+        foreach (var m in page.Value ?? [])
+            if (m.Id is not null)
+                ids.Add(m.Id);
+        if (page.OdataNextLink is null || ids.Count >= 120) break;
+        page = await graph.Me.MailFolders["inbox"].Messages
+            .WithUrl(page.OdataNextLink).GetAsync();
+    }
+    ids = [.. ids.Take(120)];
+    Console.WriteLine($"Benchmarking {ids.Count} $value downloads per concurrency level…");
+    Console.WriteLine();
+    foreach (var concurrency in new[] { 1, 2, 3, 4, 6, 1 })
+    {
+        await Task.Delay(3000);
+        long bytes = 0;
+        var errors = 0;
+        var semaphore = new SemaphoreSlim(concurrency);
+        var stopwatch = Stopwatch.StartNew();
+        await Task.WhenAll(ids.Select(async id =>
+        {
+            await semaphore.WaitAsync();
+            try
+            {
+                await using var stream = await graph.Me.Messages[id].Content.GetAsync();
+                if (stream is not null)
+                {
+                    using var buffer = new MemoryStream();
+                    await stream.CopyToAsync(buffer);
+                    Interlocked.Add(ref bytes, buffer.Length);
+                }
+            }
+            catch
+            {
+                Interlocked.Increment(ref errors);
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        }));
+        stopwatch.Stop();
+        var seconds = stopwatch.Elapsed.TotalSeconds;
+        Console.WriteLine(
+            $"  C={concurrency}: {ids.Count / seconds,6:N2} msg/s  {bytes / seconds / 1_000_000,7:N2} MB/s  " +
+            $"{seconds,6:N1}s total  errors={errors}");
+    }
+}
 
 static object? Scalar(SqliteConnection conn, string sql)
 {

@@ -20,6 +20,7 @@ public sealed record ParsedMessage(
     string? BodyText,
     string? Preview,
     bool HasAttachments,
+    int Importance, // 0 low, 1 normal, 2 high
     IReadOnlyList<MessageAddress> Addresses,
     IReadOnlyList<AttachmentContent> Attachments,
     IReadOnlyList<RawSegment> Segments);

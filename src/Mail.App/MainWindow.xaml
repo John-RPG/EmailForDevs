@@ -75,7 +75,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*" MinHeight="120"/>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="340" MinHeight="120"/>
+                    <RowDefinition Height="*" MinHeight="120"/>
                 </Grid.RowDefinitions>
 
                 <DataGrid x:Name="MessageGrid" Grid.Row="0"
@@ -98,6 +98,9 @@
                         </Style>
                     </DataGrid.RowStyle>
                     <DataGrid.Columns>
+                        <DataGridTextColumn x:Name="ColStatus" Header=""
+                                            Binding="{Binding Status}" Width="Auto"
+                                            CanUserResize="False"/>
                         <DataGridTextColumn x:Name="ColFrom" Header="From"
                                             Binding="{Binding From}" Width="Auto"/>
                         <DataGridTextColumn x:Name="ColFromName" Header="From Name"
@@ -147,32 +150,56 @@
                              BorderThickness="0,1,0,1" FontFamily="Consolas"
                              TextWrapping="Wrap" MaxHeight="120"
                              VerticalScrollBarVisibility="Auto" Background="Transparent"/>
-                    <TabControl x:Name="ReadingTabs" Grid.Row="1" BorderThickness="0"
-                                SelectionChanged="OnReadingTabChanged">
-                        <TabItem Header="Preview">
-                            <wv2:WebView2 x:Name="PreviewView"/>
-                        </TabItem>
-                        <TabItem Header="Text">
-                            <TextBox x:Name="BodyText" IsReadOnly="True" TextWrapping="Wrap"
-                                     VerticalScrollBarVisibility="Auto" FontFamily="Consolas"
-                                     BorderThickness="0"/>
-                        </TabItem>
-                        <TabItem Header="HTML">
-                            <TextBox x:Name="HtmlSourceText" IsReadOnly="True" TextWrapping="NoWrap"
-                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                     FontFamily="Consolas" BorderThickness="0"/>
-                        </TabItem>
-                        <TabItem Header="Headers">
-                            <TextBox x:Name="HeadersText" IsReadOnly="True" TextWrapping="NoWrap"
-                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                     FontFamily="Consolas" BorderThickness="0"/>
-                        </TabItem>
-                        <TabItem Header="MIME">
-                            <TextBox x:Name="RawText" IsReadOnly="True" TextWrapping="NoWrap"
-                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                     FontFamily="Consolas" BorderThickness="0"/>
-                        </TabItem>
-                    </TabControl>
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" MinWidth="200"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*" MinWidth="200"/>
+                        </Grid.ColumnDefinitions>
+                        <TabControl x:Name="ReadingTabs" Grid.Column="0" BorderThickness="0">
+                            <TabItem Header="Text">
+                                <TextBox x:Name="BodyText" IsReadOnly="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto" FontFamily="Consolas"
+                                         BorderThickness="0"/>
+                            </TabItem>
+                            <TabItem Header="HTML">
+                                <TextBox x:Name="HtmlSourceText" IsReadOnly="True" TextWrapping="NoWrap"
+                                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                         FontFamily="Consolas" BorderThickness="0"/>
+                            </TabItem>
+                            <TabItem Header="Headers">
+                                <TextBox x:Name="HeadersText" IsReadOnly="True" TextWrapping="NoWrap"
+                                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                         FontFamily="Consolas" BorderThickness="0"/>
+                            </TabItem>
+                            <TabItem Header="MIME">
+                                <TextBox x:Name="RawText" IsReadOnly="True" TextWrapping="NoWrap"
+                                         VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                         FontFamily="Consolas" BorderThickness="0"/>
+                            </TabItem>
+                            <TabItem Header="Attachments">
+                                <ListView x:Name="AttachmentList" BorderThickness="0"
+                                          MouseDoubleClick="OnAttachmentSave"
+                                          ToolTip="Double-click an attachment to save it">
+                                    <ListView.View>
+                                        <GridView>
+                                            <GridViewColumn Header="Name" Width="260"
+                                                            DisplayMemberBinding="{Binding Name}"/>
+                                            <GridViewColumn Header="Type" Width="170"
+                                                            DisplayMemberBinding="{Binding ContentType}"/>
+                                            <GridViewColumn Header="KB" Width="70"
+                                                            DisplayMemberBinding="{Binding SizeKb}"/>
+                                            <GridViewColumn Header="Inline" Width="50"
+                                                            DisplayMemberBinding="{Binding Inline}"/>
+                                        </GridView>
+                                    </ListView.View>
+                                </ListView>
+                            </TabItem>
+                        </TabControl>
+                        <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center"
+                                      VerticalAlignment="Stretch" ShowsPreview="True"/>
+                        <wv2:WebView2 x:Name="PreviewView" Grid.Column="2"/>
+                    </Grid>
                 </Grid>
             </Grid>
         </Grid>

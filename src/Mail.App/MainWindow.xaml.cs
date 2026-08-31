@@ -891,7 +891,9 @@ public partial class MainWindow : Window
 
                 var sync = new GraphMailboxSync(
                     graph, () => MailboxDatabase.Open(mailbox.DbPath, mailbox.Dek), OnProgress);
-                var stats = await sync.SyncAsync(since);
+                // Task.Run keeps the engine (and its await continuations — page
+                // classification, MIME parsing) off the UI dispatcher entirely.
+                var stats = await Task.Run(() => sync.SyncAsync(since));
                 stopwatch.Stop();
                 UpdateTreeCounts(mailbox);
                 var summary = stats.Added + stats.Updated + stats.Removed == 0

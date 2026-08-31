@@ -133,6 +133,37 @@ completion, DevExpress-FilterEditor-like in *behavior* — built in-house in pur
 WPF, no third-party control) is just a front-end that produces this AST; plain
 text search is the degenerate case.
 
+## Threading
+
+Conversation keys are computed at ingest from References/In-Reply-To
+(JWZ-style): adopt the key of any referenced message; merge keys when a message
+bridges several; handle out-of-order arrival via a `message_references` table
+(a late-arriving parent finds children that referenced it and merges). Server
+conversation ids (Graph conversationId) will be stored alongside when sync
+lands, but our own keys are authoritative so behavior is identical across
+Graph/IMAP/POP.
+
+## HTML rendering (WebView2, locked down)
+
+Defense in depth: (1) WebResourceRequested filter on `*` — the engine gets all
+content from us (virtual host + cid: from blob store) and every external
+request is cancelled; opt-in remote images are fetched by our own sterile
+HttpClient and cached, never by the engine. (2) Scripts/web-messages/host
+objects/DevTools/autofill disabled in settings. (3) DOM sanitization before
+serving (strip script/iframe/object/forms/on*/javascript:/meta-refresh).
+(4) All navigation cancelled; links show their real target and open in the
+system browser on confirm. (5) Throwaway in-memory profile; Chromium sandbox.
+Plain-text / simplified / raw-source views always available.
+
+## UI layout
+
+Three-pane: tree | message list | reading pane (right, switchable to bottom or
+off), message popouts for multi-monitor. Shell starts with fixed GridSplitter
+panes; AvalonDock is the approved candidate exception for real docking once
+panel count justifies it. Message list rows configurable 1–3 lines per folder
+(1 = dense grid columns; 2–3 add subject/preview lines; custom tiles maybe
+later).
+
 ## Non-negotiable UX principles
 
 - Always show the real From/To addresses, never just a contact display name.

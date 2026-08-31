@@ -97,6 +97,13 @@ public static class MailboxDatabase
         CREATE INDEX ix_messages_imid ON messages(internet_message_id);
         CREATE INDEX ix_messages_conversation ON messages(conversation_key);
 
+        CREATE TABLE message_references(
+            message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+            reference  TEXT NOT NULL,                -- referenced internet_message_id
+            PRIMARY KEY(message_id, reference)
+        );
+        CREATE INDEX ix_message_references_ref ON message_references(reference);
+
         CREATE TABLE message_addresses(
             message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
             address_id INTEGER NOT NULL REFERENCES addresses(id),

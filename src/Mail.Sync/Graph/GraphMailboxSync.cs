@@ -17,7 +17,9 @@ namespace Mail.Sync.Graph;
 /// flag/folder updates; removals are applied move-safely.
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed class GraphMailboxSync(GraphServiceClient graph, SqliteConnection db, Action<string>? log = null)
+public sealed class GraphMailboxSync(
+    GraphServiceClient graph, SqliteConnection db,
+    Action<string>? log = null, Action? onFolderSynced = null)
 {
     static readonly string[] DeltaSelect =
         ["id", "internetMessageId", "isRead", "isDraft", "flag", "receivedDateTime", "parentFolderId"];
@@ -43,6 +45,8 @@ public sealed class GraphMailboxSync(GraphServiceClient graph, SqliteConnection 
             ct.ThrowIfCancellationRequested();
             var (a, u, r, f) = await SyncFolderMessagesAsync(localId, serverId, name, since, ct);
             added += a; updated += u; removed += r; failed += f;
+            if (a + u + r > 0)
+                onFolderSynced?.Invoke();
         }
         return new SyncStats(folders.Count, added, updated, removed, failed);
     }

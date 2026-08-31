@@ -22,9 +22,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="250" MinWidth="150"/>
                 <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="*" MinWidth="250"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="560" MinWidth="280"/>
+                <ColumnDefinition Width="*" MinWidth="400"/>
             </Grid.ColumnDefinitions>
 
             <TreeView x:Name="FolderTree" Grid.Column="0"
@@ -33,65 +31,93 @@
             <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center"
                           VerticalAlignment="Stretch" ShowsPreview="True"/>
 
-            <ListView x:Name="MessageList" Grid.Column="2"
-                      SelectionChanged="OnMessageSelected" BorderThickness="0,1,0,0"
-                      VirtualizingPanel.IsVirtualizing="True"
-                      VirtualizingPanel.VirtualizationMode="Recycling">
-                <ListView.ItemContainerStyle>
-                    <Style TargetType="ListViewItem">
-                        <Setter Property="Padding" Value="2,1"/>
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding IsUnread}" Value="True">
-                                <Setter Property="FontWeight" Value="Bold"/>
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </ListView.ItemContainerStyle>
-                <ListView.View>
-                    <GridView>
-                        <GridViewColumn Header="From" Width="230" DisplayMemberBinding="{Binding From}"/>
-                        <GridViewColumn Header="Subject" Width="430" DisplayMemberBinding="{Binding Subject}"/>
-                        <GridViewColumn Header="Received" Width="120" DisplayMemberBinding="{Binding Received}"/>
-                        <GridViewColumn Header="KB" Width="60" DisplayMemberBinding="{Binding SizeKb}"/>
-                    </GridView>
-                </ListView.View>
-            </ListView>
-
-            <GridSplitter Grid.Column="3" Width="5" HorizontalAlignment="Center"
-                          VerticalAlignment="Stretch" ShowsPreview="True"/>
-
-            <Grid Grid.Column="4">
+            <Grid Grid.Column="2">
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="*" MinHeight="120"/>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="320" MinHeight="120"/>
                 </Grid.RowDefinitions>
-                <TextBox x:Name="EnvelopeText" Grid.Row="0" IsReadOnly="True"
-                         BorderThickness="0,1,0,1" FontFamily="Consolas"
-                         TextWrapping="Wrap" MaxHeight="140"
-                         VerticalScrollBarVisibility="Auto" Background="Transparent"/>
-                <TabControl Grid.Row="1" BorderThickness="0">
-                    <TabItem Header="Text">
-                        <TextBox x:Name="BodyText" IsReadOnly="True" TextWrapping="Wrap"
-                                 VerticalScrollBarVisibility="Auto" FontFamily="Consolas"
-                                 BorderThickness="0"/>
-                    </TabItem>
-                    <TabItem Header="Headers">
-                        <TextBox x:Name="HeadersText" IsReadOnly="True" TextWrapping="NoWrap"
-                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                 FontFamily="Consolas" BorderThickness="0"/>
-                    </TabItem>
-                    <TabItem Header="Raw">
-                        <TextBox x:Name="RawText" IsReadOnly="True" TextWrapping="NoWrap"
-                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                                 FontFamily="Consolas" BorderThickness="0"/>
-                    </TabItem>
-                </TabControl>
+
+                <ListView x:Name="MessageList" Grid.Row="0"
+                          SelectionChanged="OnMessageSelected" BorderThickness="0,1,0,0"
+                          SizeChanged="OnListSizeChanged"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling">
+                    <ListView.ItemContainerStyle>
+                        <Style TargetType="ListViewItem">
+                            <Setter Property="Padding" Value="2,1"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsUnread}" Value="True">
+                                    <Setter Property="FontWeight" Value="Bold"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ListView.ItemContainerStyle>
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn x:Name="FromNameColumn" Header="From Name" Width="170"
+                                            DisplayMemberBinding="{Binding FromName}"/>
+                            <GridViewColumn x:Name="FromAddressColumn" Header="From Address" Width="210"
+                                            DisplayMemberBinding="{Binding FromAddress}"/>
+                            <GridViewColumn x:Name="ToColumn" Header="To" Width="210"
+                                            DisplayMemberBinding="{Binding To}"/>
+                            <GridViewColumn x:Name="ReceivedColumn" Header="Received" Width="115"
+                                            DisplayMemberBinding="{Binding Received}"/>
+                            <GridViewColumn x:Name="SizeColumn" Header="KB" Width="55"
+                                            DisplayMemberBinding="{Binding SizeKb}"/>
+                            <GridViewColumn x:Name="SubjectColumn" Header="Subject" Width="400"
+                                            DisplayMemberBinding="{Binding Subject}"/>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+
+                <GridSplitter Grid.Row="1" Height="5" HorizontalAlignment="Stretch"
+                              VerticalAlignment="Center" ShowsPreview="True"/>
+
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <TextBox x:Name="EnvelopeText" Grid.Row="0" IsReadOnly="True"
+                             BorderThickness="0,1,0,1" FontFamily="Consolas"
+                             TextWrapping="Wrap" MaxHeight="120"
+                             VerticalScrollBarVisibility="Auto" Background="Transparent"/>
+                    <TabControl Grid.Row="1" BorderThickness="0">
+                        <TabItem Header="Text">
+                            <TextBox x:Name="BodyText" IsReadOnly="True" TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto" FontFamily="Consolas"
+                                     BorderThickness="0"/>
+                        </TabItem>
+                        <TabItem Header="Headers">
+                            <TextBox x:Name="HeadersText" IsReadOnly="True" TextWrapping="NoWrap"
+                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                     FontFamily="Consolas" BorderThickness="0"/>
+                        </TabItem>
+                        <TabItem Header="Raw">
+                            <TextBox x:Name="RawText" IsReadOnly="True" TextWrapping="NoWrap"
+                                     VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                                     FontFamily="Consolas" BorderThickness="0"/>
+                        </TabItem>
+                    </TabControl>
+                </Grid>
             </Grid>
         </Grid>
 
         <StatusBar Grid.Row="2">
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" Text="Opening profile…"/>
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="SyncLabel" Margin="0,0,8,0" VerticalAlignment="Center"/>
+                    <ProgressBar x:Name="SyncBar" Width="160" Height="14" VerticalAlignment="Center"/>
+                    <Button x:Name="SyncButton" Content="Sync now" Margin="8,0,0,0"
+                            Padding="8,1" Click="OnSyncClick"/>
+                </StackPanel>
             </StatusBarItem>
         </StatusBar>
     </Grid>

@@ -7,6 +7,9 @@ UI, honest local storage, fast search.
 ## Stack
 
 - .NET 10 (LTS), WPF, Windows-only.
+- **Low dependency count is a hard rule.** No third-party UI suites (DevExpress/
+  Telerik/Syncfusion serve as interaction-design references only), no ORM, no DI
+  framework. New packages must earn their place; prefer BCL and hand-rolled.
 - MailKit/MimeKit — IMAP/SMTP/POP3 + MIME parsing.
 - Microsoft.Graph + MSAL (WAM broker) — Outlook.com and M365 accounts, first-class.
 - Microsoft.Data.Sqlite — storage, FTS5 for search.
@@ -126,8 +129,9 @@ comparisons — from/to/subject/date/size/flags/has-attachment — ranges, and
 full-text terms). The AST compiles to local SQL+FTS5 and, where expressible, to
 Graph `$filter`/`$search`; unsupported fragments fall back to local-only with
 the limitation surfaced. The planned filter-editor UI (token/pill style with
-completion, DevExpress-FilterEditor-like) is just a front-end that produces
-this AST; plain text search is the degenerate case.
+completion, DevExpress-FilterEditor-like in *behavior* — built in-house in pure
+WPF, no third-party control) is just a front-end that produces this AST; plain
+text search is the degenerate case.
 
 ## Non-negotiable UX principles
 

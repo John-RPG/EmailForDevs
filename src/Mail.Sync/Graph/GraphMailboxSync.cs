@@ -27,8 +27,8 @@ public sealed class GraphMailboxSync(
     GraphServiceClient graph,
     Func<SqliteConnection> dbFactory,
     Action<GraphMailboxSync.SyncProgressEvent>? progress = null,
-    int maxConcurrentDownloads = 4,
-    int maxConcurrentFolders = 3)
+    int maxConcurrentDownloads = 1,
+    int maxConcurrentFolders = 1)
 {
     public enum SyncPhase { Folders, Counting, Downloading, FolderDone, Throttled }
 

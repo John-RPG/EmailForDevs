@@ -705,6 +705,7 @@ public partial class MainWindow : Window
                 var since = mailbox.Since;
                 var stopwatch = Stopwatch.StartNew();
                 var lastTreeUpdate = 0;
+                var rateSamples = new Queue<(TimeSpan At, int Downloaded)>();
 
                 void OnProgress(GraphMailboxSync.SyncProgressEvent p) => Dispatcher.BeginInvoke(() =>
                 {
@@ -726,12 +727,21 @@ public partial class MainWindow : Window
                                 SyncBar.Maximum = total;
                                 SyncBar.Value = Math.Min(p.OverallDownloaded, total);
                             }
+                            // Rate over a sliding ~90s window so listing/resume phases
+                            // and stalls don't poison the ETA.
                             var eta = "";
-                            if (p.OverallTarget is int t && p.OverallDownloaded > 5)
+                            var now = stopwatch.Elapsed;
+                            rateSamples.Enqueue((now, p.OverallDownloaded));
+                            while (rateSamples.Count > 2 && now - rateSamples.Peek().At > TimeSpan.FromSeconds(90))
+                                rateSamples.Dequeue();
+                            var oldest = rateSamples.Peek();
+                            var windowSeconds = (now - oldest.At).TotalSeconds;
+                            if (p.OverallTarget is int t && windowSeconds > 5 &&
+                                p.OverallDownloaded > oldest.Downloaded)
                             {
-                                var rate = p.OverallDownloaded / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.1);
+                                var rate = (p.OverallDownloaded - oldest.Downloaded) / windowSeconds;
                                 var remaining = Math.Max(t - p.OverallDownloaded, 0);
-                                eta = $" · {rate:N1}/s · ETA {TimeSpan.FromSeconds(remaining / Math.Max(rate, 0.1)):hh\\:mm\\:ss}";
+                                eta = $" · {rate:N1}/s · ETA {TimeSpan.FromSeconds(remaining / Math.Max(rate, 0.01)):hh\\:mm\\:ss}";
                             }
                             SyncLabel.Text =
                                 $"{p.FolderName} ({p.FolderIndex:N0}/{p.FolderCount:N0}): " +

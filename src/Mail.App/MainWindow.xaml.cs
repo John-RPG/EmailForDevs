@@ -1,9 +1,12 @@
+using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using Mail.Core.Ingest;
 using Mail.Core.Search;
 using Mail.Storage;
 using Mail.Storage.Database;
@@ -13,18 +16,21 @@ using Mail.Sync.Graph;
 using Microsoft.Data.Sqlite;
 using Microsoft.Graph;
 using Microsoft.Kiota.Abstractions.Authentication;
+using Microsoft.Web.WebView2.Core;
+using MimeKit;
 
 namespace Mail.App;
 
 /// <summary>
-/// First shell: folder tree | dense message list | honest reading pane below
-/// (plain text, real addresses, headers, byte-exact raw source), with in-app
-/// incremental sync reporting into the status bar. Reads the dev profile
-/// produced by tools/SyncSmoke.
+/// Dev shell: folder tree + activity log | dense message list | reading pane
+/// (locked-down rendered preview, plain text, HTML source, headers, byte-exact
+/// raw). In-app incremental sync with counted targets, determinate progress,
+/// and ETA in the status bar. Reads the dev profile produced by tools/SyncSmoke.
 /// </summary>
 public partial class MainWindow : Window
 {
     const int RawDisplayCap = 2 * 1024 * 1024;
+    const int PreviewHtmlCap = 1_500_000; // NavigateToString limit safety
 
     sealed record MailboxHandle(string Upn, string DbPath, byte[] Dek, int WindowMonths, SqliteConnection Db);
     sealed record FolderNode(MailboxHandle Mailbox, long FolderId, string Name);
@@ -34,19 +40,33 @@ public partial class MainWindow : Window
 
     readonly List<MailboxHandle> _mailboxes = [];
     readonly Dictionary<(string Upn, long FolderId), TreeViewItem> _folderItems = [];
+    readonly ObservableCollection<string> _log = [];
     SqliteConnection? _appDb;
     string? _scratchRoot;
     bool _syncRunning;
+    bool _webViewReady;
+    string? _currentHtml;
+    bool _previewDirty;
 
     public MainWindow()
     {
         InitializeComponent();
+        ActivityLog.ItemsSource = _log;
         Loaded += (_, _) =>
         {
             OpenProfile();
             StartSync();
         };
         Closed += (_, _) => CloseAll();
+    }
+
+    void Log(string line)
+    {
+        _log.Add($"{DateTime.Now:HH:mm:ss}  {line}");
+        while (_log.Count > 500)
+            _log.RemoveAt(0);
+        if (ActivityLog.Items.Count > 0)
+            ActivityLog.ScrollIntoView(ActivityLog.Items[^1]);
     }
 
     // ---- startup -------------------------------------------------------------
@@ -81,10 +101,12 @@ public partial class MainWindow : Window
             }
             BuildTree();
             StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
+            Log($"Profile opened: {_mailboxes.Count} mailbox(es).");
         }
         catch (Exception ex)
         {
             StatusText.Text = ex.Message;
+            Log($"ERROR: {ex.Message}");
             MessageBox.Show(this, ex.Message, "eeeMail", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -280,6 +302,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = $"Failed to load message {row.Id}: {ex.Message}";
+            Log($"ERROR loading message {row.Id}: {ex.Message}");
         }
     }
 
@@ -327,22 +350,24 @@ public partial class MainWindow : Window
         }
         EnvelopeText.Text = envelope.ToString().TrimEnd();
 
-        // Plain text body straight from the FTS store.
-        using (var cmd = mailbox.Db.CreateCommand())
-        {
-            cmd.CommandText = "SELECT body_text FROM messages_fts WHERE rowid = @id;";
-            cmd.Parameters.AddWithValue("@id", messageId);
-            BodyText.Text = cmd.ExecuteScalar() as string ?? "(no text body)";
-        }
-
-        // Headers + raw source, byte-exact from the segment store.
+        // Byte-exact raw from the segment store; decode bodies via MimeKit.
         var raw = MailboxStore.GetRawMessage(mailbox.Db, messageId);
+        var mime = MimeMessage.Load(new MemoryStream(raw));
+        _currentHtml = mime.HtmlBody;
+        BodyText.Text = mime.TextBody
+            ?? (_currentHtml is null ? "(no text body)" : HtmlText.ToPlainText(_currentHtml));
+        HtmlSourceText.Text = _currentHtml ?? "(no HTML body)";
+
         var headerEnd = FindHeaderEnd(raw);
         HeadersText.Text = Encoding.Latin1.GetString(raw, 0, headerEnd < 0 ? raw.Length : headerEnd);
         RawText.Text = raw.Length <= RawDisplayCap
             ? Encoding.Latin1.GetString(raw)
             : Encoding.Latin1.GetString(raw, 0, RawDisplayCap) +
               $"{Environment.NewLine}… (truncated for display: {raw.Length:N0} bytes total)";
+
+        _previewDirty = true;
+        if (ReadingTabs.SelectedIndex == 0)
+            _ = RenderPreviewAsync();
     }
 
     static int FindHeaderEnd(byte[] raw)
@@ -355,6 +380,89 @@ public partial class MainWindow : Window
         }
         return -1;
     }
+
+    // ---- rendered preview (locked-down WebView2) -----------------------------
+
+    void OnReadingTabChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ReferenceEquals(e.Source, ReadingTabs) && ReadingTabs.SelectedIndex == 0 && _previewDirty)
+            _ = RenderPreviewAsync();
+    }
+
+    async Task RenderPreviewAsync()
+    {
+        try
+        {
+            await EnsurePreviewAsync();
+            _previewDirty = false;
+            var html = _currentHtml;
+            if (html is null)
+            {
+                var text = System.Net.WebUtility.HtmlEncode(BodyText.Text);
+                html = $"<html><body><pre style=\"font-family:Consolas,monospace;white-space:pre-wrap\">{text}</pre></body></html>";
+            }
+            else if (html.Length > PreviewHtmlCap)
+            {
+                html = html[..PreviewHtmlCap];
+            }
+            PreviewView.CoreWebView2.NavigateToString(html);
+        }
+        catch (Exception ex)
+        {
+            Log($"Preview failed: {ex.Message}");
+            StatusText.Text = $"Preview failed: {ex.Message}";
+        }
+    }
+
+    async Task EnsurePreviewAsync()
+    {
+        if (_webViewReady)
+            return;
+        var dataDir = Path.Combine(_scratchRoot ?? Path.GetTempPath(), "webview2");
+        var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: dataDir);
+        await PreviewView.EnsureCoreWebView2Async(environment);
+
+        var core = PreviewView.CoreWebView2;
+        var settings = core.Settings;
+        settings.IsScriptEnabled = false;
+        settings.AreDefaultScriptDialogsEnabled = false;
+        settings.AreDevToolsEnabled = false;
+        settings.IsWebMessageEnabled = false;
+        settings.AreHostObjectsAllowed = false;
+        settings.IsPasswordAutosaveEnabled = false;
+        settings.IsGeneralAutofillEnabled = false;
+        settings.IsStatusBarEnabled = false;
+        settings.AreDefaultContextMenusEnabled = false;
+
+        // The engine never touches the network: every external request is refused.
+        core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+        core.WebResourceRequested += (_, args) =>
+        {
+            var uri = args.Request.Uri;
+            if (uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
+                uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
+                return;
+            args.Response = core.Environment.CreateWebResourceResponse(null, 403, "Blocked", "");
+            Dispatcher.BeginInvoke(() => Log($"Preview blocked: {Truncate(uri, 90)}"));
+        };
+        core.NavigationStarting += (_, args) =>
+        {
+            if (args.Uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase) ||
+                args.Uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                return;
+            args.Cancel = true;
+            Dispatcher.BeginInvoke(() =>
+            {
+                StatusText.Text = $"Link blocked (opens externally in a later build): {args.Uri}";
+                Log($"Link click blocked: {Truncate(args.Uri, 90)}");
+            });
+        };
+        core.NewWindowRequested += (_, args) => args.Handled = true;
+        _webViewReady = true;
+        Log("Preview engine initialized (scripts off, network fenced).");
+    }
+
+    static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 
     // ---- search --------------------------------------------------------------
 
@@ -408,6 +516,7 @@ public partial class MainWindow : Window
         SyncButton.IsEnabled = false;
         SyncBar.IsIndeterminate = true;
         SyncLabel.Text = "Sync starting…";
+        Log("Sync started.");
         try
         {
             var auth = new GraphAuthenticator(
@@ -424,18 +533,67 @@ public partial class MainWindow : Window
                 var graph = new GraphServiceClient(
                     new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, token)));
                 var since = DateTimeOffset.UtcNow.AddMonths(-mailbox.WindowMonths);
+                var stopwatch = Stopwatch.StartNew();
+                var lastTreeUpdate = 0;
+
+                void OnProgress(GraphMailboxSync.SyncProgressEvent p) => Dispatcher.BeginInvoke(() =>
+                {
+                    switch (p.Phase)
+                    {
+                        case GraphMailboxSync.SyncPhase.Folders:
+                            SyncLabel.Text = "Listing folders…";
+                            break;
+                        case GraphMailboxSync.SyncPhase.Counting:
+                            SyncLabel.Text = $"Counting… ({p.FolderIndex}/{p.FolderCount}) {p.FolderName}";
+                            break;
+                        case GraphMailboxSync.SyncPhase.Downloading:
+                            if (p.OverallTarget is int total && total > 0)
+                            {
+                                SyncBar.IsIndeterminate = false;
+                                SyncBar.Maximum = total;
+                                SyncBar.Value = Math.Min(p.OverallDownloaded, total);
+                            }
+                            var eta = "";
+                            if (p.OverallTarget is int t && p.OverallDownloaded > 5)
+                            {
+                                var rate = p.OverallDownloaded / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.1);
+                                var remaining = Math.Max(t - p.OverallDownloaded, 0);
+                                eta = $" · {rate:F1}/s · ETA {TimeSpan.FromSeconds(remaining / Math.Max(rate, 0.1)):mm\\:ss}";
+                            }
+                            SyncLabel.Text =
+                                $"{p.FolderName} ({p.FolderIndex}/{p.FolderCount}): " +
+                                $"{p.FolderDownloaded}/{p.FolderTarget?.ToString() ?? "?"} · " +
+                                $"overall {p.OverallDownloaded}/{p.OverallTarget?.ToString() ?? "?"}{eta}";
+                            if (p.OverallDownloaded - lastTreeUpdate >= 25)
+                            {
+                                lastTreeUpdate = p.OverallDownloaded;
+                                UpdateTreeCounts(mailbox);
+                            }
+                            break;
+                        case GraphMailboxSync.SyncPhase.FolderDone:
+                            if (p.FolderDownloaded > 0)
+                                Log($"{p.FolderName}: +{p.FolderDownloaded}");
+                            UpdateTreeCounts(mailbox);
+                            break;
+                    }
+                });
+
                 var stats = await Task.Run(async () =>
                 {
                     // The sync task gets its own connection; WAL keeps UI reads happy.
                     using var syncDb = MailboxDatabase.Open(mailbox.DbPath, mailbox.Dek);
-                    var sync = new GraphMailboxSync(graph, syncDb,
-                        log: line => Dispatcher.BeginInvoke(() => SyncLabel.Text = line.Trim()),
-                        onFolderSynced: () => Dispatcher.BeginInvoke(() => UpdateTreeCounts(mailbox)));
+                    var sync = new GraphMailboxSync(graph, syncDb, OnProgress);
                     return await sync.SyncAsync(since);
                 });
+                stopwatch.Stop();
                 UpdateTreeCounts(mailbox);
-                SyncLabel.Text = $"{mailbox.Upn}: +{stats.Added} ~{stats.Updated} -{stats.Removed}" +
-                                 (stats.Failed > 0 ? $" ({stats.Failed} failed)" : "");
+                var summary = stats.Added + stats.Updated + stats.Removed == 0
+                    ? $"Up to date — {stats.Folders} folders checked in {stopwatch.Elapsed.TotalSeconds:F1}s"
+                    : $"{mailbox.Upn}: +{stats.Added} ~{stats.Updated} -{stats.Removed}" +
+                      (stats.Failed > 0 ? $" ({stats.Failed} failed)" : "") +
+                      $" in {stopwatch.Elapsed.TotalSeconds:F0}s";
+                SyncLabel.Text = summary;
+                Log(summary);
             }
             if (FolderTree.SelectedItem is TreeViewItem { Tag: FolderNode node })
                 LoadFolder(node);
@@ -443,13 +601,13 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SyncLabel.Text = $"Sync failed: {ex.Message}";
+            Log($"SYNC ERROR: {ex.Message}");
         }
         finally
         {
             _syncRunning = false;
             SyncButton.IsEnabled = true;
             SyncBar.IsIndeterminate = false;
-            SyncBar.Value = 0;
         }
     }
 }

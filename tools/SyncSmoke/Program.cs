@@ -56,7 +56,12 @@ var graph = new GraphServiceClient(
 var since = DateTimeOffset.UtcNow.AddMonths(-months);
 Console.WriteLine($"Syncing (initial window: last {months} month(s), incremental afterwards)…");
 var stopwatch = Stopwatch.StartNew();
-var sync = new GraphMailboxSync(graph, mailboxDb, Console.WriteLine);
+var sync = new GraphMailboxSync(graph, mailboxDb, p =>
+{
+    if (p.Phase == GraphMailboxSync.SyncPhase.FolderDone && p.FolderDownloaded > 0)
+        Console.WriteLine($"  {p.FolderName}: +{p.FolderDownloaded}" +
+            $" (overall {p.OverallDownloaded}/{p.OverallTarget?.ToString() ?? "?"})");
+});
 var stats = await sync.SyncAsync(since);
 stopwatch.Stop();
 

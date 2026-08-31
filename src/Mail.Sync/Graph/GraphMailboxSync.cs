@@ -15,12 +15,25 @@ namespace Mail.Sync.Graph;
 /// downloaded as raw RFC 5322 via the $value endpoint — byte-exact source of
 /// truth — and fed through the MIME ingestion pipeline; changed messages get
 /// flag/folder updates; removals are applied move-safely.
+///
+/// Progress: folders needing an initial download are $count-ed up front so the
+/// caller can render a determinate bar and ETA; incremental folders have an
+/// unknown (usually tiny) target.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class GraphMailboxSync(
     GraphServiceClient graph, SqliteConnection db,
-    Action<string>? log = null, Action? onFolderSynced = null)
+    Action<GraphMailboxSync.SyncProgressEvent>? progress = null)
 {
+    public enum SyncPhase { Folders, Counting, Downloading, FolderDone }
+
+    public sealed record SyncProgressEvent(
+        SyncPhase Phase, string? FolderName, int FolderIndex, int FolderCount,
+        int FolderDownloaded, int? FolderTarget,
+        int OverallDownloaded, int? OverallTarget);
+
+    public sealed record SyncStats(int Folders, int Added, int Updated, int Removed, int Failed);
+
     static readonly string[] DeltaSelect =
         ["id", "internetMessageId", "isRead", "isDraft", "flag", "receivedDateTime", "parentFolderId"];
 
@@ -31,24 +44,68 @@ public sealed class GraphMailboxSync(
         ("archive", "archive"),
     ];
 
-    public sealed record SyncStats(int Folders, int Added, int Updated, int Removed, int Failed);
+    int _overallDownloaded;
+    int? _overallTarget;
 
     /// <summary>Full sync pass. <paramref name="since"/> bounds the initial window per folder
     /// (WindowedCache); ignored on incremental runs, which resume from the delta token.</summary>
     public async Task<SyncStats> SyncAsync(DateTimeOffset? since = null, CancellationToken ct = default)
     {
+        progress?.Invoke(new(SyncPhase.Folders, null, 0, 0, 0, null, 0, null));
         var specialUse = await MapWellKnownFoldersAsync(ct);
         var folders = await SyncFoldersAsync(specialUse, ct);
-        int added = 0, updated = 0, removed = 0, failed = 0;
-        foreach (var (localId, serverId, name) in folders)
+
+        // Pre-count folders that face an initial (non-delta) download so the
+        // caller gets a determinate overall target.
+        var targets = new int?[folders.Count];
+        var overallKnown = 0;
+        var anyKnown = false;
+        for (var i = 0; i < folders.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
-            var (a, u, r, f) = await SyncFolderMessagesAsync(localId, serverId, name, since, ct);
+            progress?.Invoke(new(SyncPhase.Counting, folders[i].Name, i + 1, folders.Count, 0, null, 0, null));
+            if (MailboxStore.GetDeltaToken(db, folders[i].LocalId) is null)
+            {
+                targets[i] = await TryCountFolderAsync(folders[i].ServerId, since, ct);
+                if (targets[i] is int known)
+                {
+                    overallKnown += known;
+                    anyKnown = true;
+                }
+            }
+        }
+        _overallTarget = anyKnown ? overallKnown : null;
+        _overallDownloaded = 0;
+
+        int added = 0, updated = 0, removed = 0, failed = 0;
+        for (var i = 0; i < folders.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var (localId, serverId, name) = folders[i];
+            var (a, u, r, f) = await SyncFolderMessagesAsync(
+                localId, serverId, name, i + 1, folders.Count, targets[i], since, ct);
             added += a; updated += u; removed += r; failed += f;
-            if (a + u + r > 0)
-                onFolderSynced?.Invoke();
+            progress?.Invoke(new(SyncPhase.FolderDone, name, i + 1, folders.Count,
+                a, targets[i], _overallDownloaded, _overallTarget));
         }
         return new SyncStats(folders.Count, added, updated, removed, failed);
+    }
+
+    async Task<int?> TryCountFolderAsync(string serverFolderId, DateTimeOffset? since, CancellationToken ct)
+    {
+        try
+        {
+            return await graph.Me.MailFolders[serverFolderId].Messages.Count.GetAsync(rc =>
+            {
+                rc.Headers.Add("ConsistencyLevel", "eventual");
+                if (since is { } s)
+                    rc.QueryParameters.Filter = $"receivedDateTime ge {s.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}";
+            }, ct);
+        }
+        catch (ODataError)
+        {
+            return null; // count unsupported here — fall back to unknown target
+        }
     }
 
     async Task<Dictionary<string, string>> MapWellKnownFoldersAsync(CancellationToken ct)
@@ -71,24 +128,22 @@ public sealed class GraphMailboxSync(
         Dictionary<string, string> specialUse, CancellationToken ct)
     {
         var result = new List<(long, string, string)>();
-        await WalkFoldersAsync(parentServerId: null, ct, async (folder, parentServerId) =>
+        await WalkFoldersAsync(parentServerId: null, ct, folder =>
         {
-            if (folder.Id is null) return;
-            var name = folder.DisplayName ?? folder.Id;
+            if (folder.Folder.Id is null) return;
+            var name = folder.Folder.DisplayName ?? folder.Folder.Id;
             var localId = MailboxStore.UpsertFolder(
-                db, folder.Id, parentServerId, name,
-                specialUse.GetValueOrDefault(folder.Id),
-                folder.TotalItemCount ?? 0, folder.UnreadItemCount ?? 0);
-            result.Add((localId, folder.Id, name));
-            await Task.CompletedTask;
+                db, folder.Folder.Id, folder.ParentServerId, name,
+                specialUse.GetValueOrDefault(folder.Folder.Id),
+                folder.Folder.TotalItemCount ?? 0, folder.Folder.UnreadItemCount ?? 0);
+            result.Add((localId, folder.Folder.Id, name));
         });
-        log?.Invoke($"Folders: {result.Count}");
         return result;
     }
 
     async Task WalkFoldersAsync(
         string? parentServerId, CancellationToken ct,
-        Func<MailFolder, string?, Task> visit)
+        Action<(MailFolder Folder, string? ParentServerId)> visit)
     {
         var page = parentServerId is null
             ? await graph.Me.MailFolders.GetAsync(rc => rc.QueryParameters.Top = 100, ct)
@@ -99,7 +154,7 @@ public sealed class GraphMailboxSync(
             foreach (var folder in page.Value ?? [])
             {
                 ct.ThrowIfCancellationRequested();
-                await visit(folder, parentServerId);
+                visit((folder, parentServerId));
                 if (folder.ChildFolderCount > 0 && folder.Id is not null)
                     await WalkFoldersAsync(folder.Id, ct, visit);
             }
@@ -110,11 +165,15 @@ public sealed class GraphMailboxSync(
 
     async Task<(int Added, int Updated, int Removed, int Failed)> SyncFolderMessagesAsync(
         long localFolderId, string serverFolderId, string name,
+        int folderIndex, int folderCount, int? folderTarget,
         DateTimeOffset? since, CancellationToken ct)
     {
         int added = 0, updated = 0, removed = 0, failed = 0;
         var deltaBuilder = graph.Me.MailFolders[serverFolderId].Messages.Delta;
         var storedToken = MailboxStore.GetDeltaToken(db, localFolderId);
+
+        progress?.Invoke(new(SyncPhase.Downloading, name, folderIndex, folderCount,
+            0, folderTarget, _overallDownloaded, _overallTarget));
 
         var page = storedToken is not null
             ? await deltaBuilder.WithUrl(storedToken).GetAsDeltaGetResponseAsync(cancellationToken: ct)
@@ -148,15 +207,15 @@ public sealed class GraphMailboxSync(
                         default:
                             await DownloadAndIngestAsync(localFolderId, message, ct);
                             added++;
-                            if (added % 50 == 0)
-                                log?.Invoke($"  {name}: {added} downloaded…");
+                            _overallDownloaded++;
+                            progress?.Invoke(new(SyncPhase.Downloading, name, folderIndex, folderCount,
+                                added, folderTarget, _overallDownloaded, _overallTarget));
                             break;
                     }
                 }
-                catch (ODataError ex)
+                catch (ODataError)
                 {
                     failed++;
-                    log?.Invoke($"  {name}: skipping {message.Id}: {ex.Error?.Message ?? ex.Message}");
                 }
             }
             if (page.OdataNextLink is not null)
@@ -169,10 +228,6 @@ public sealed class GraphMailboxSync(
                 MailboxStore.SaveDeltaToken(db, localFolderId, "graph", page.OdataDeltaLink);
             break;
         }
-
-        if (added + updated + removed + failed > 0)
-            log?.Invoke($"  {name}: +{added} ~{updated} -{removed}" +
-                        (failed > 0 ? $" ({failed} failed)" : ""));
         return (added, updated, removed, failed);
     }
 

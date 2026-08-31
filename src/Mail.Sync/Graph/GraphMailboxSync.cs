@@ -134,16 +134,36 @@ public sealed class GraphMailboxSync(
             progress?.Invoke(new(SyncPhase.Downloading, folder.Name, index, _folderCount,
                 0, target, _overallDownloaded, _overallTarget));
 
-            var page = storedToken is not null
-                ? await Guarded(() => deltaBuilder.WithUrl(storedToken)
-                    .GetAsDeltaGetResponseAsync(cancellationToken: ct), throttle, ct)
-                : await Guarded(() => deltaBuilder.GetAsDeltaGetResponseAsync(rc =>
+            Task<Microsoft.Graph.Me.MailFolders.Item.Messages.Delta.DeltaGetResponse?> FreshListing() =>
+                deltaBuilder.GetAsDeltaGetResponseAsync(rc =>
                 {
                     rc.QueryParameters.Select = DeltaSelect;
                     if (since is { } s)
                         rc.QueryParameters.Filter =
                             $"receivedDateTime ge {s.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}";
-                }, ct), throttle, ct);
+                }, ct)!;
+
+            Microsoft.Graph.Me.MailFolders.Item.Messages.Delta.DeltaGetResponse? page;
+            if (storedToken is not null)
+            {
+                try
+                {
+                    // Stored cursor may be a mid-listing nextLink or a final deltaLink —
+                    // both resume server-side from exactly where we left off.
+                    page = await Guarded(() => deltaBuilder.WithUrl(storedToken)
+                        .GetAsDeltaGetResponseAsync(cancellationToken: ct), throttle, ct);
+                }
+                catch (ODataError ex) when (ex.ResponseStatusCode == 410)
+                {
+                    // Cursor expired server-side: restart the folder from scratch;
+                    // stored messages are skipped by id, not re-downloaded.
+                    page = await Guarded(FreshListing, throttle, ct);
+                }
+            }
+            else
+            {
+                page = await Guarded(FreshListing, throttle, ct);
+            }
 
             while (page is not null)
             {
@@ -179,7 +199,10 @@ public sealed class GraphMailboxSync(
                 }
                 if (page.OdataNextLink is not null)
                 {
+                    // Mid-listing checkpoint: enqueued behind this page's data ops,
+                    // so a restart resumes here having lost at most one page.
                     var next = page.OdataNextLink;
+                    await writer.WriteAsync(new TokenOp(folder.LocalId, next), ct);
                     page = await Guarded(() => deltaBuilder.WithUrl(next)
                         .GetAsDeltaGetResponseAsync(cancellationToken: ct), throttle, ct);
                     continue;

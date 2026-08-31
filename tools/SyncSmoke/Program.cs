@@ -52,7 +52,7 @@ using var mailboxDb = MailboxDatabase.Open(mailboxDbPath, dek);
 
 // --- sync --------------------------------------------------------------------
 var graph = new GraphServiceClient(
-    new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, signIn.Account)));
+    new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, signIn)));
 var since = DateTimeOffset.UtcNow.AddMonths(-months);
 Console.WriteLine($"Syncing (initial window: last {months} month(s), incremental afterwards)…");
 var stopwatch = Stopwatch.StartNew();

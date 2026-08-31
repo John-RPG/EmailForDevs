@@ -31,7 +31,7 @@ Console.WriteLine($"Granted scopes: {string.Join(' ', result.Scopes)}");
 Console.WriteLine();
 
 var graph = new GraphServiceClient(
-    new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, result.Account)));
+    new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, result)));
 
 var me = await graph.Me.GetAsync();
 Console.WriteLine($"Graph /me: {me?.DisplayName} <{me?.Mail ?? me?.UserPrincipalName}>");

@@ -45,13 +45,18 @@ public sealed class GraphAuthenticator
     public async Task<IReadOnlyList<IAccount>> GetAccountsAsync() =>
         [.. await _app.GetAccountsAsync()];
 
-    /// <summary>Silent acquisition; null when interactive sign-in is required.</summary>
+    /// <summary>
+    /// Silent acquisition; null when interactive sign-in is required.
+    /// Pass the scopes actually granted at sign-in where known — personal accounts
+    /// never grant the .Shared scopes, and requesting ungranted scopes defeats the
+    /// token cache (every call redeems the refresh token until the service throttles).
+    /// </summary>
     public async Task<AuthenticationResult?> AcquireSilentAsync(
-        IAccount account, CancellationToken ct = default)
+        IAccount account, IEnumerable<string>? scopes = null, CancellationToken ct = default)
     {
         try
         {
-            return await _app.AcquireTokenSilent(MailScopes, account).ExecuteAsync(ct);
+            return await _app.AcquireTokenSilent(scopes ?? MailScopes, account).ExecuteAsync(ct);
         }
         catch (MsalUiRequiredException)
         {

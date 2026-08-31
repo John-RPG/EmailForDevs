@@ -118,6 +118,108 @@ public static class MailboxStore
         return result.ToArray();
     }
 
+    // ---- sync support --------------------------------------------------------
+
+    /// <summary>Insert or update a folder by its server id; resolves the parent by server id too.</summary>
+    public static long UpsertFolder(
+        SqliteConnection conn, string serverId, string? parentServerId, string name,
+        string? specialUse, int totalCount, int unreadCount)
+    {
+        var parentId = parentServerId is null ? null : FindFolderByServerId(conn, parentServerId);
+        var existing = FindFolderByServerId(conn, serverId);
+        if (existing is long id)
+        {
+            Exec(conn, null, """
+                UPDATE folders SET parent_id=@p, name=@n, special_use=@s,
+                                   total_count=@t, unread_count=@u WHERE id=@id;
+                """,
+                ("@p", parentId), ("@n", name), ("@s", specialUse),
+                ("@t", totalCount), ("@u", unreadCount), ("@id", id));
+            return id;
+        }
+        return Insert(conn, null, """
+            INSERT INTO folders(server_id, parent_id, name, special_use, total_count, unread_count)
+            VALUES(@sid, @p, @n, @s, @t, @u);
+            """,
+            ("@sid", serverId), ("@p", parentId), ("@n", name), ("@s", specialUse),
+            ("@t", totalCount), ("@u", unreadCount));
+    }
+
+    public static long? FindFolderByServerId(SqliteConnection conn, string serverId)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id FROM folders WHERE server_id = @s;";
+        cmd.Parameters.AddWithValue("@s", serverId);
+        return cmd.ExecuteScalar() as long?;
+    }
+
+    public static long? TryGetMessageIdByServerId(SqliteConnection conn, string serverId)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id FROM messages WHERE server_id = @s;";
+        cmd.Parameters.AddWithValue("@s", serverId);
+        return cmd.ExecuteScalar() as long?;
+    }
+
+    /// <summary>Applies server-side state (folder move, read/flag/draft) to an existing message.</summary>
+    public static void UpdateMessageState(
+        SqliteConnection conn, long messageId, long folderId,
+        bool isRead, bool isFlagged, bool isDraft)
+    {
+        Exec(conn, null, """
+            UPDATE messages SET folder_id=@f, is_read=@r, is_flagged=@fl, is_draft=@d WHERE id=@id;
+            """,
+            ("@f", folderId), ("@r", isRead ? 1 : 0), ("@fl", isFlagged ? 1 : 0),
+            ("@d", isDraft ? 1 : 0), ("@id", messageId));
+    }
+
+    /// <summary>
+    /// Removes a message reported deleted in this folder (skips if it was moved and
+    /// already re-homed elsewhere). Cleans the FTS row and the body; orphaned blobs
+    /// are left for <see cref="MailboxDatabase.CollectGarbageBlobs"/>.
+    /// </summary>
+    public static bool DeleteMessageByServerId(SqliteConnection conn, string serverId, long folderId)
+    {
+        using var tx = conn.BeginTransaction();
+        long messageId;
+        long? bodyId;
+        using (var find = Command(conn, tx,
+            "SELECT id, body_id FROM messages WHERE server_id = @s AND folder_id = @f;",
+            [("@s", serverId), ("@f", folderId)]))
+        using (var reader = find.ExecuteReader())
+        {
+            if (!reader.Read())
+                return false;
+            messageId = reader.GetInt64(0);
+            bodyId = reader.IsDBNull(1) ? null : reader.GetInt64(1);
+        }
+        Exec(conn, tx, "DELETE FROM messages WHERE id = @id;", ("@id", messageId));
+        Exec(conn, tx, "DELETE FROM messages_fts WHERE rowid = @id;", ("@id", messageId));
+        if (bodyId is long b)
+            Exec(conn, tx, "DELETE FROM bodies WHERE id = @b;", ("@b", b));
+        tx.Commit();
+        return true;
+    }
+
+    public static string? GetDeltaToken(SqliteConnection conn, long folderId)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT delta_token FROM sync_state WHERE folder_id = @f;";
+        cmd.Parameters.AddWithValue("@f", folderId);
+        return cmd.ExecuteScalar() as string;
+    }
+
+    public static void SaveDeltaToken(SqliteConnection conn, long folderId, string provider, string? deltaToken)
+    {
+        Exec(conn, null, """
+            INSERT INTO sync_state(folder_id, provider, delta_token, last_sync_at)
+            VALUES(@f, @p, @t, unixepoch())
+            ON CONFLICT(folder_id) DO UPDATE SET
+                provider=@p, delta_token=@t, last_sync_at=unixepoch();
+            """,
+            ("@f", folderId), ("@p", provider), ("@t", deltaToken));
+    }
+
     static string ResolveConversationKey(SqliteConnection conn, SqliteTransaction tx, ParsedMessage parsed)
     {
         var keys = new List<string>();
@@ -193,21 +295,21 @@ public static class MailboxStore
         return (long)cmd.ExecuteScalar()!;
     }
 
-    static long Insert(SqliteConnection conn, SqliteTransaction tx, string sql,
+    static long Insert(SqliteConnection conn, SqliteTransaction? tx, string sql,
         params (string Name, object? Value)[] parameters)
     {
         using var cmd = Command(conn, tx, sql + " SELECT last_insert_rowid();", parameters);
         return (long)cmd.ExecuteScalar()!;
     }
 
-    static void Exec(SqliteConnection conn, SqliteTransaction tx, string sql,
+    static void Exec(SqliteConnection conn, SqliteTransaction? tx, string sql,
         params (string Name, object? Value)[] parameters)
     {
         using var cmd = Command(conn, tx, sql, parameters);
         cmd.ExecuteNonQuery();
     }
 
-    static SqliteCommand Command(SqliteConnection conn, SqliteTransaction tx, string sql,
+    static SqliteCommand Command(SqliteConnection conn, SqliteTransaction? tx, string sql,
         (string Name, object? Value)[] parameters)
     {
         var cmd = conn.CreateCommand();

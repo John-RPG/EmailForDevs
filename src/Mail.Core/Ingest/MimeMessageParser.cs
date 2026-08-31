@@ -41,7 +41,7 @@ public static class MimeMessageParser
             using var content = new MemoryStream();
             part.Content?.DecodeTo(content);
             attachments.Add(new AttachmentContent(
-                part.FileName, part.ContentType.MimeType, isInline, content.ToArray()));
+                part.FileName, part.ContentType.MimeType, isInline, part.ContentId, content.ToArray()));
         }
 
         return new ParsedMessage(

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -22,15 +23,17 @@ using MimeKit;
 namespace Mail.App;
 
 /// <summary>
-/// Dev shell: folder tree + activity log | dense message list | reading pane
-/// (locked-down rendered preview, plain text, HTML source, headers, byte-exact
-/// raw). In-app incremental sync with counted targets, determinate progress,
-/// and ETA in the status bar. Reads the dev profile produced by tools/SyncSmoke.
+/// Dev shell: folder tree + activity log | DataGrid message list with a column
+/// chooser | reading pane (locked-down rendered preview with cid: images,
+/// plain text, HTML source, headers, byte-exact MIME). Message actions write
+/// back to Graph. In-app parallel sync with counted targets, determinate
+/// progress, and ETA. Reads the dev profile produced by tools/SyncSmoke.
 /// </summary>
 public partial class MainWindow : Window
 {
     const int RawDisplayCap = 2 * 1024 * 1024;
-    const int PreviewHtmlCap = 1_500_000; // NavigateToString limit safety
+    const int PreviewHtmlCap = 1_500_000;
+    const string CidHost = "https://eeemail.local/cid/";
 
     sealed record MailboxHandle(
         string Upn, string DbPath, byte[] Dek, int WindowMonths, string Policy, SqliteConnection Db)
@@ -40,13 +43,17 @@ public partial class MainWindow : Window
         public DateTimeOffset? Since =>
             IsFullMirror ? null : DateTimeOffset.UtcNow.AddMonths(-WindowMonths);
     }
+
     sealed record FolderNode(MailboxHandle Mailbox, long FolderId, string Name);
+
     public sealed record MessageRow(
-        object Mailbox, long Id, string FromName, string FromAddress, string To,
-        string Received, string SizeKb, string Subject, bool IsUnread);
+        object Mailbox, long Id, string? ServerId, string From, string FromName,
+        string FromAddress, string To, string Received, string SizeKb, double SizeVal,
+        string Subject, bool IsUnread);
 
     readonly List<MailboxHandle> _mailboxes = [];
     readonly Dictionary<(string Upn, long FolderId), TreeViewItem> _folderItems = [];
+    readonly Dictionary<string, GraphServiceClient> _graphClients = [];
     readonly ObservableCollection<string> _log = [];
     SqliteConnection? _appDb;
     string? _scratchRoot;
@@ -54,6 +61,8 @@ public partial class MainWindow : Window
     bool _webViewReady;
     string? _currentHtml;
     bool _previewDirty;
+    MailboxHandle? _currentMailbox;
+    long _currentMessageId;
 
     public MainWindow()
     {
@@ -62,6 +71,7 @@ public partial class MainWindow : Window
         Loaded += (_, _) =>
         {
             OpenProfile();
+            BuildColumnsMenu();
             StartSync();
         };
         Closed += (_, _) => CloseAll();
@@ -136,6 +146,26 @@ public partial class MainWindow : Window
         _appDb?.Dispose();
     }
 
+    void BuildColumnsMenu()
+    {
+        ColumnsMenu.Items.Clear();
+        foreach (var column in MessageGrid.Columns)
+        {
+            var item = new MenuItem
+            {
+                Header = column.Header,
+                IsCheckable = true,
+                IsChecked = column.Visibility == Visibility.Visible,
+                StaysOpenOnClick = true,
+            };
+            item.Click += (_, _) =>
+            {
+                column.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+            };
+            ColumnsMenu.Items.Add(item);
+        }
+    }
+
     // ---- folder tree ---------------------------------------------------------
 
     void BuildTree()
@@ -177,13 +207,15 @@ public partial class MainWindow : Window
             inboxItem.IsSelected = true;
     }
 
-    sealed record FolderRow(long Id, long? ParentId, string Name, string? Special, long ServerTotal, long ServerUnread);
+    sealed record FolderRow(
+        long Id, long? ParentId, string Name, string? Special, string? ServerId,
+        long ServerTotal, long ServerUnread);
 
     static List<FolderRow> QueryFolders(MailboxHandle mailbox)
     {
         using var cmd = mailbox.Db.CreateCommand();
         cmd.CommandText = """
-            SELECT id, parent_id, name, special_use, total_count, unread_count FROM folders
+            SELECT id, parent_id, name, special_use, server_id, total_count, unread_count FROM folders
             ORDER BY CASE special_use
                          WHEN 'inbox' THEN 0 WHEN 'drafts' THEN 1 WHEN 'sent' THEN 2
                          WHEN 'archive' THEN 3 WHEN 'junk' THEN 4 WHEN 'trash' THEN 5
@@ -198,7 +230,8 @@ public partial class MainWindow : Window
                 reader.IsDBNull(1) ? null : reader.GetInt64(1),
                 reader.GetString(2),
                 reader.IsDBNull(3) ? null : reader.GetString(3),
-                reader.GetInt64(4), reader.GetInt64(5)));
+                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.GetInt64(5), reader.GetInt64(6)));
         return rows;
     }
 
@@ -216,14 +249,12 @@ public partial class MainWindow : Window
         return counts;
     }
 
-    /// <summary>"Name (local/serverTotal) (localUnread/serverUnread)" while the local copy
-    /// trails the server (downloading / windowed); plain "(unread)" once caught up.</summary>
     static string FolderHeader(FolderRow row, Dictionary<long, (long Total, long Unread)> local)
     {
         var (localTotal, localUnread) = local.GetValueOrDefault(row.Id);
         if (localTotal < row.ServerTotal)
-            return $"{row.Name} ({localTotal}/{row.ServerTotal}) ({localUnread}/{row.ServerUnread})";
-        return localUnread > 0 ? $"{row.Name} ({localUnread})" : row.Name;
+            return $"{row.Name} ({localTotal:N0}/{row.ServerTotal:N0}) ({localUnread:N0}/{row.ServerUnread:N0})";
+        return localUnread > 0 ? $"{row.Name} ({localUnread:N0})" : row.Name;
     }
 
     void UpdateTreeCounts(MailboxHandle mailbox)
@@ -243,7 +274,7 @@ public partial class MainWindow : Window
     // ---- message list --------------------------------------------------------
 
     const string RowSelect = """
-        SELECT m.id, m.subject, m.received_at, m.size, m.is_read,
+        SELECT m.id, m.subject, m.received_at, m.size, m.is_read, m.server_id,
                fa.display_name, fa.email,
                (SELECT a2.email
                 FROM message_addresses ma2 JOIN addresses a2 ON a2.id = ma2.address_id
@@ -257,10 +288,10 @@ public partial class MainWindow : Window
     void LoadFolder(FolderNode node)
     {
         using var cmd = node.Mailbox.Db.CreateCommand();
-        cmd.CommandText = RowSelect + " WHERE m.folder_id = @f ORDER BY m.received_at DESC LIMIT 2000;";
+        cmd.CommandText = RowSelect + " WHERE m.folder_id = @f ORDER BY m.received_at DESC LIMIT 5000;";
         cmd.Parameters.AddWithValue("@f", node.FolderId);
         FillList(node.Mailbox, cmd);
-        StatusText.Text = $"{node.Mailbox.Upn} / {node.Name}: {MessageList.Items.Count} message(s)";
+        StatusText.Text = $"{node.Mailbox.Upn} / {node.Name}: {MessageGrid.Items.Count:N0} message(s)";
     }
 
     void FillList(MailboxHandle mailbox, SqliteCommand cmd)
@@ -270,43 +301,162 @@ public partial class MainWindow : Window
         {
             while (reader.Read())
             {
-                var name = reader.IsDBNull(5) ? "" : reader.GetString(5);
-                var email = reader.IsDBNull(6) ? "" : reader.GetString(6);
+                var name = reader.IsDBNull(6) ? "" : reader.GetString(6);
+                var email = reader.IsDBNull(7) ? "" : reader.GetString(7);
+                var sizeVal = reader.IsDBNull(3) ? 0 : reader.GetInt64(3) / 1024.0;
                 rows.Add(new MessageRow(
                     mailbox,
                     reader.GetInt64(0),
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    From: string.IsNullOrEmpty(name) || name == email ? email : $"{name} <{email}>",
                     FromName: name == email ? "" : name,
                     FromAddress: email,
-                    To: reader.IsDBNull(7) ? "" : reader.GetString(7),
+                    To: reader.IsDBNull(8) ? "" : reader.GetString(8),
                     Received: reader.IsDBNull(2)
                         ? ""
                         : DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2))
                             .ToLocalTime().ToString("yyyy-MM-dd HH:mm"),
-                    SizeKb: reader.IsDBNull(3) ? "" : (reader.GetInt64(3) / 1024.0).ToString("N0"),
+                    SizeKb: sizeVal.ToString("N0"),
+                    SizeVal: sizeVal,
                     Subject: reader.IsDBNull(1) ? "" : reader.GetString(1),
                     IsUnread: reader.GetInt64(4) == 0));
             }
         }
-        MessageList.ItemsSource = rows;
-        StretchSubjectColumn();
+        MessageGrid.ItemsSource = rows;
     }
 
-    void OnListSizeChanged(object sender, SizeChangedEventArgs e) => StretchSubjectColumn();
+    // ---- message actions -----------------------------------------------------
 
-    void StretchSubjectColumn()
+    List<MessageRow> SelectedRows() => [.. MessageGrid.SelectedItems.OfType<MessageRow>()];
+
+    void OnGridKeyDown(object sender, KeyEventArgs e)
     {
-        var fixedWidth = FromNameColumn.ActualWidth + FromAddressColumn.ActualWidth +
-                         ToColumn.ActualWidth + ReceivedColumn.ActualWidth + SizeColumn.ActualWidth;
-        var remaining = MessageList.ActualWidth - fixedWidth - 35; // scrollbar + chrome
-        if (remaining > 120)
-            SubjectColumn.Width = remaining;
+        if (e.Key == Key.Delete)
+        {
+            e.Handled = true;
+            OnDeleteMessages(sender, new RoutedEventArgs());
+        }
+    }
+
+    void OnMarkRead(object sender, RoutedEventArgs e) => SetRead(true);
+    void OnMarkUnread(object sender, RoutedEventArgs e) => SetRead(false);
+
+    async void SetRead(bool isRead)
+    {
+        var rows = SelectedRows();
+        if (rows.Count == 0 || rows[0].Mailbox is not MailboxHandle mailbox) return;
+        foreach (var row in rows)
+            MailboxStore.SetMessageRead(mailbox.Db, row.Id, isRead);
+        RefreshAfterAction(mailbox);
+        try
+        {
+            var graph = await GetGraphAsync(mailbox);
+            foreach (var row in rows.Where(r => r.ServerId is not null))
+                await graph.Me.Messages[row.ServerId].PatchAsync(
+                    new Microsoft.Graph.Models.Message { IsRead = isRead });
+            Log($"Marked {rows.Count:N0} message(s) {(isRead ? "read" : "unread")} (server updated).");
+        }
+        catch (Exception ex)
+        {
+            Log($"Server update failed (local change kept, next sync reconciles): {ex.Message}");
+        }
+    }
+
+    async void OnDeleteMessages(object sender, RoutedEventArgs e)
+    {
+        var rows = SelectedRows();
+        if (rows.Count == 0 || rows[0].Mailbox is not MailboxHandle mailbox) return;
+        var trash = QueryFolders(mailbox).FirstOrDefault(f => f.Special == "trash");
+        if (trash is null)
+        {
+            Log("No trash folder known — refusing to delete.");
+            return;
+        }
+        foreach (var row in rows)
+            MailboxStore.MoveMessageLocal(mailbox.Db, row.Id, trash.Id);
+        RefreshAfterAction(mailbox);
+        try
+        {
+            var graph = await GetGraphAsync(mailbox);
+            foreach (var row in rows.Where(r => r.ServerId is not null))
+                await graph.Me.Messages[row.ServerId].Move.PostAsync(
+                    new Microsoft.Graph.Me.Messages.Item.Move.MovePostRequestBody
+                    { DestinationId = "deleteditems" });
+            Log($"Moved {rows.Count:N0} message(s) to Deleted Items (server updated).");
+        }
+        catch (Exception ex)
+        {
+            Log($"Server delete failed (local change kept, next sync reconciles): {ex.Message}");
+        }
+    }
+
+    void OnMoveToOpened(object sender, RoutedEventArgs e)
+    {
+        MoveToMenu.Items.Clear();
+        var mailbox = SelectedRows().FirstOrDefault()?.Mailbox as MailboxHandle;
+        if (mailbox is null && (FolderTree.SelectedItem as TreeViewItem)?.Tag is FolderNode node)
+            mailbox = node.Mailbox;
+        if (mailbox is null) return;
+        foreach (var folder in QueryFolders(mailbox).Where(f => f.ServerId is not null))
+        {
+            var item = new MenuItem { Header = folder.Name };
+            item.Click += (_, _) => MoveSelectedTo(mailbox, folder);
+            MoveToMenu.Items.Add(item);
+        }
+    }
+
+    async void MoveSelectedTo(MailboxHandle mailbox, FolderRow target)
+    {
+        var rows = SelectedRows();
+        if (rows.Count == 0) return;
+        foreach (var row in rows)
+            MailboxStore.MoveMessageLocal(mailbox.Db, row.Id, target.Id);
+        RefreshAfterAction(mailbox);
+        try
+        {
+            var graph = await GetGraphAsync(mailbox);
+            foreach (var row in rows.Where(r => r.ServerId is not null))
+                await graph.Me.Messages[row.ServerId].Move.PostAsync(
+                    new Microsoft.Graph.Me.Messages.Item.Move.MovePostRequestBody
+                    { DestinationId = target.ServerId });
+            Log($"Moved {rows.Count:N0} message(s) to {target.Name} (server updated).");
+        }
+        catch (Exception ex)
+        {
+            Log($"Server move failed (local change kept, next sync reconciles): {ex.Message}");
+        }
+    }
+
+    void RefreshAfterAction(MailboxHandle mailbox)
+    {
+        UpdateTreeCounts(mailbox);
+        if (FolderTree.SelectedItem is TreeViewItem { Tag: FolderNode node })
+            LoadFolder(node);
+    }
+
+    async Task<GraphServiceClient> GetGraphAsync(MailboxHandle mailbox)
+    {
+        if (_graphClients.TryGetValue(mailbox.Upn, out var cached))
+            return cached;
+        var auth = new GraphAuthenticator(
+            Path.Combine(_scratchRoot!, "msal.cache"),
+            () => new WindowInteropHelper(this).Handle);
+        var accounts = await auth.GetAccountsAsync();
+        var account = accounts.FirstOrDefault(a =>
+            string.Equals(a.Username, mailbox.Upn, StringComparison.OrdinalIgnoreCase));
+        var token = account is null ? null : await auth.AcquireSilentAsync(account);
+        token ??= await auth.SignInInteractiveAsync(mailbox.Upn);
+        var client = new GraphServiceClient(
+            new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, token)));
+        _graphClients[mailbox.Upn] = client;
+        return client;
     }
 
     // ---- reading pane --------------------------------------------------------
 
     void OnMessageSelected(object sender, SelectionChangedEventArgs e)
     {
-        if (MessageList.SelectedItem is not MessageRow row || row.Mailbox is not MailboxHandle mailbox)
+        if (MessageGrid.SelectedItem is not MessageRow row || row.Mailbox is not MailboxHandle mailbox)
             return;
         try
         {
@@ -323,7 +473,9 @@ public partial class MainWindow : Window
 
     void ShowMessage(MailboxHandle mailbox, long messageId)
     {
-        // Real addresses, always — grouped by kind, never contact-substituted.
+        _currentMailbox = mailbox;
+        _currentMessageId = messageId;
+
         var envelope = new StringBuilder();
         using (var cmd = mailbox.Db.CreateCommand())
         {
@@ -363,7 +515,6 @@ public partial class MainWindow : Window
         }
         EnvelopeText.Text = envelope.ToString().TrimEnd();
 
-        // Byte-exact raw from the segment store; decode bodies via MimeKit.
         var raw = MailboxStore.GetRawMessage(mailbox.Db, messageId);
         var mime = MimeMessage.Load(new MemoryStream(raw));
         _currentHtml = mime.HtmlBody;
@@ -414,9 +565,11 @@ public partial class MainWindow : Window
                 var text = System.Net.WebUtility.HtmlEncode(BodyText.Text);
                 html = $"<html><body><pre style=\"font-family:Consolas,monospace;white-space:pre-wrap\">{text}</pre></body></html>";
             }
-            else if (html.Length > PreviewHtmlCap)
+            else
             {
-                html = html[..PreviewHtmlCap];
+                html = Regex.Replace(html, "cid:", CidHost, RegexOptions.IgnoreCase);
+                if (html.Length > PreviewHtmlCap)
+                    html = html[..PreviewHtmlCap];
             }
             PreviewView.CoreWebView2.NavigateToString(html);
         }
@@ -447,7 +600,6 @@ public partial class MainWindow : Window
         settings.IsStatusBarEnabled = false;
         settings.AreDefaultContextMenusEnabled = false;
 
-        // The engine never touches the network: every external request is refused.
         core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
         core.WebResourceRequested += (_, args) =>
         {
@@ -455,6 +607,21 @@ public partial class MainWindow : Window
             if (uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
                 uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
                 return;
+            if (uri.StartsWith(CidHost, StringComparison.OrdinalIgnoreCase))
+            {
+                var contentId = Uri.UnescapeDataString(uri[CidHost.Length..]);
+                if (_currentMailbox is not null &&
+                    MailboxStore.TryGetInlineAttachment(_currentMailbox.Db, _currentMessageId, contentId)
+                        is { } attachment)
+                {
+                    args.Response = core.Environment.CreateWebResourceResponse(
+                        new MemoryStream(attachment.Content), 200, "OK",
+                        $"Content-Type: {attachment.ContentType}");
+                    return;
+                }
+                args.Response = core.Environment.CreateWebResourceResponse(null, 404, "Not Found", "");
+                return;
+            }
             args.Response = core.Environment.CreateWebResourceResponse(null, 403, "Blocked", "");
             Dispatcher.BeginInvoke(() => Log($"Preview blocked: {Truncate(uri, 90)}"));
         };
@@ -509,7 +676,7 @@ public partial class MainWindow : Window
             foreach (var (name, value) in compiled.Parameters)
                 cmd.Parameters.AddWithValue(name, value);
             FillList(mailbox, cmd);
-            StatusText.Text = $"Search '{term}' in {mailbox.Upn}: {MessageList.Items.Count} hit(s)";
+            StatusText.Text = $"Search '{term}' in {mailbox.Upn}: {MessageGrid.Items.Count:N0} hit(s)";
         }
         catch (QueryCompilationException ex)
         {
@@ -532,19 +699,9 @@ public partial class MainWindow : Window
         Log("Sync started.");
         try
         {
-            var auth = new GraphAuthenticator(
-                Path.Combine(_scratchRoot, "msal.cache"),
-                () => new WindowInteropHelper(this).Handle);
             foreach (var mailbox in _mailboxes.ToList())
             {
-                var accounts = await auth.GetAccountsAsync();
-                var account = accounts.FirstOrDefault(a =>
-                    string.Equals(a.Username, mailbox.Upn, StringComparison.OrdinalIgnoreCase));
-                var token = account is null ? null : await auth.AcquireSilentAsync(account);
-                token ??= await auth.SignInInteractiveAsync(mailbox.Upn);
-
-                var graph = new GraphServiceClient(
-                    new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, token)));
+                var graph = await GetGraphAsync(mailbox);
                 var since = mailbox.Since;
                 var stopwatch = Stopwatch.StartNew();
                 var lastTreeUpdate = 0;
@@ -557,7 +714,10 @@ public partial class MainWindow : Window
                             SyncLabel.Text = "Listing folders…";
                             break;
                         case GraphMailboxSync.SyncPhase.Counting:
-                            SyncLabel.Text = $"Counting… ({p.FolderIndex}/{p.FolderCount}) {p.FolderName}";
+                            SyncLabel.Text = $"Counting… ({p.FolderIndex:N0}/{p.FolderCount:N0}) {p.FolderName}";
+                            break;
+                        case GraphMailboxSync.SyncPhase.Throttled:
+                            Log($"Throttled (429) — download workers reduced to {p.FolderDownloaded:N0}.");
                             break;
                         case GraphMailboxSync.SyncPhase.Downloading:
                             if (p.OverallTarget is int total && total > 0)
@@ -571,13 +731,13 @@ public partial class MainWindow : Window
                             {
                                 var rate = p.OverallDownloaded / Math.Max(stopwatch.Elapsed.TotalSeconds, 0.1);
                                 var remaining = Math.Max(t - p.OverallDownloaded, 0);
-                                eta = $" · {rate:F1}/s · ETA {TimeSpan.FromSeconds(remaining / Math.Max(rate, 0.1)):mm\\:ss}";
+                                eta = $" · {rate:N1}/s · ETA {TimeSpan.FromSeconds(remaining / Math.Max(rate, 0.1)):hh\\:mm\\:ss}";
                             }
                             SyncLabel.Text =
-                                $"{p.FolderName} ({p.FolderIndex}/{p.FolderCount}): " +
-                                $"{p.FolderDownloaded}/{p.FolderTarget?.ToString() ?? "?"} · " +
-                                $"overall {p.OverallDownloaded}/{p.OverallTarget?.ToString() ?? "?"}{eta}";
-                            if (p.OverallDownloaded - lastTreeUpdate >= 25)
+                                $"{p.FolderName} ({p.FolderIndex:N0}/{p.FolderCount:N0}): " +
+                                $"{p.FolderDownloaded:N0}/{p.FolderTarget?.ToString("N0") ?? "?"} · " +
+                                $"overall {p.OverallDownloaded:N0}/{p.OverallTarget?.ToString("N0") ?? "?"}{eta}";
+                            if (p.OverallDownloaded - lastTreeUpdate >= 50)
                             {
                                 lastTreeUpdate = p.OverallDownloaded;
                                 UpdateTreeCounts(mailbox);
@@ -585,26 +745,22 @@ public partial class MainWindow : Window
                             break;
                         case GraphMailboxSync.SyncPhase.FolderDone:
                             if (p.FolderDownloaded > 0)
-                                Log($"{p.FolderName}: +{p.FolderDownloaded}");
+                                Log($"{p.FolderName}: +{p.FolderDownloaded:N0}");
                             UpdateTreeCounts(mailbox);
                             break;
                     }
                 });
 
-                var stats = await Task.Run(async () =>
-                {
-                    // The sync task gets its own connection; WAL keeps UI reads happy.
-                    using var syncDb = MailboxDatabase.Open(mailbox.DbPath, mailbox.Dek);
-                    var sync = new GraphMailboxSync(graph, syncDb, OnProgress);
-                    return await sync.SyncAsync(since);
-                });
+                var sync = new GraphMailboxSync(
+                    graph, () => MailboxDatabase.Open(mailbox.DbPath, mailbox.Dek), OnProgress);
+                var stats = await sync.SyncAsync(since);
                 stopwatch.Stop();
                 UpdateTreeCounts(mailbox);
                 var summary = stats.Added + stats.Updated + stats.Removed == 0
-                    ? $"Up to date ({mailbox.ScopeText}) — {stats.Folders} folders checked in {stopwatch.Elapsed.TotalSeconds:F1}s"
-                    : $"Sync complete ({mailbox.ScopeText}): +{stats.Added} ~{stats.Updated} -{stats.Removed}" +
-                      (stats.Failed > 0 ? $" ({stats.Failed} failed)" : "") +
-                      $" in {stopwatch.Elapsed.TotalMinutes:F1} min";
+                    ? $"Up to date ({mailbox.ScopeText}) — {stats.Folders:N0} folders checked in {stopwatch.Elapsed.TotalSeconds:N1}s"
+                    : $"Sync complete ({mailbox.ScopeText}): +{stats.Added:N0} ~{stats.Updated:N0} -{stats.Removed:N0}" +
+                      (stats.Failed > 0 ? $" ({stats.Failed:N0} failed)" : "") +
+                      $" in {stopwatch.Elapsed.TotalMinutes:N1} min";
                 SyncLabel.Text = summary;
                 Log(summary);
             }

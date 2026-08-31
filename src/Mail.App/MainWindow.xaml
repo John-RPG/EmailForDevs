@@ -51,38 +51,62 @@
                     <RowDefinition Height="340" MinHeight="120"/>
                 </Grid.RowDefinitions>
 
-                <ListView x:Name="MessageList" Grid.Row="0"
-                          SelectionChanged="OnMessageSelected" BorderThickness="0,1,0,0"
-                          SizeChanged="OnListSizeChanged"
-                          VirtualizingPanel.IsVirtualizing="True"
-                          VirtualizingPanel.VirtualizationMode="Recycling">
-                    <ListView.ItemContainerStyle>
-                        <Style TargetType="ListViewItem">
-                            <Setter Property="Padding" Value="2,1"/>
+                <DataGrid x:Name="MessageGrid" Grid.Row="0"
+                          AutoGenerateColumns="False" IsReadOnly="True"
+                          SelectionMode="Extended" SelectionUnit="FullRow"
+                          GridLinesVisibility="None" RowHeaderWidth="0"
+                          BorderThickness="0,1,0,0" HeadersVisibility="Column"
+                          EnableRowVirtualization="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          CanUserAddRows="False" CanUserDeleteRows="False"
+                          SelectionChanged="OnMessageSelected"
+                          PreviewKeyDown="OnGridKeyDown">
+                    <DataGrid.RowStyle>
+                        <Style TargetType="DataGridRow">
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsUnread}" Value="True">
                                     <Setter Property="FontWeight" Value="Bold"/>
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
-                    </ListView.ItemContainerStyle>
-                    <ListView.View>
-                        <GridView>
-                            <GridViewColumn x:Name="FromNameColumn" Header="From Name" Width="170"
-                                            DisplayMemberBinding="{Binding FromName}"/>
-                            <GridViewColumn x:Name="FromAddressColumn" Header="From Address" Width="210"
-                                            DisplayMemberBinding="{Binding FromAddress}"/>
-                            <GridViewColumn x:Name="ToColumn" Header="To" Width="210"
-                                            DisplayMemberBinding="{Binding To}"/>
-                            <GridViewColumn x:Name="ReceivedColumn" Header="Received" Width="115"
-                                            DisplayMemberBinding="{Binding Received}"/>
-                            <GridViewColumn x:Name="SizeColumn" Header="KB" Width="55"
-                                            DisplayMemberBinding="{Binding SizeKb}"/>
-                            <GridViewColumn x:Name="SubjectColumn" Header="Subject" Width="400"
-                                            DisplayMemberBinding="{Binding Subject}"/>
-                        </GridView>
-                    </ListView.View>
-                </ListView>
+                    </DataGrid.RowStyle>
+                    <DataGrid.Columns>
+                        <DataGridTextColumn x:Name="ColFrom" Header="From"
+                                            Binding="{Binding From}" Width="250"/>
+                        <DataGridTextColumn x:Name="ColFromName" Header="From Name"
+                                            Binding="{Binding FromName}" Width="160" Visibility="Collapsed"/>
+                        <DataGridTextColumn x:Name="ColFromAddress" Header="From Address"
+                                            Binding="{Binding FromAddress}" Width="210" Visibility="Collapsed"/>
+                        <DataGridTextColumn x:Name="ColTo" Header="To"
+                                            Binding="{Binding To}" Width="200"/>
+                        <DataGridTextColumn x:Name="ColReceived" Header="Received"
+                                            Binding="{Binding Received}" Width="120"/>
+                        <DataGridTextColumn x:Name="ColSize" Header="KB"
+                                            Binding="{Binding SizeKb}" Width="60"
+                                            SortMemberPath="SizeVal">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextAlignment" Value="Right"/>
+                                    <Setter Property="Margin" Value="0,0,6,0"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
+                        <DataGridTextColumn x:Name="ColSubject" Header="Subject"
+                                            Binding="{Binding Subject}" Width="*"/>
+                    </DataGrid.Columns>
+                    <DataGrid.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Mark read" Click="OnMarkRead"/>
+                            <MenuItem Header="Mark unread" Click="OnMarkUnread"/>
+                            <MenuItem Header="Delete" InputGestureText="Del" Click="OnDeleteMessages"/>
+                            <MenuItem x:Name="MoveToMenu" Header="Move to">
+                                <MenuItem Header="(loading…)"/>
+                            </MenuItem>
+                            <Separator/>
+                            <MenuItem x:Name="ColumnsMenu" Header="Columns"/>
+                        </ContextMenu>
+                    </DataGrid.ContextMenu>
+                </DataGrid>
 
                 <GridSplitter Grid.Row="1" Height="5" HorizontalAlignment="Stretch"
                               VerticalAlignment="Center" ShowsPreview="True"/>
@@ -116,7 +140,7 @@
                                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                                      FontFamily="Consolas" BorderThickness="0"/>
                         </TabItem>
-                        <TabItem Header="Raw">
+                        <TabItem Header="MIME">
                             <TextBox x:Name="RawText" IsReadOnly="True" TextWrapping="NoWrap"
                                      VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                                      FontFamily="Consolas" BorderThickness="0"/>

@@ -40,6 +40,28 @@ else
 
 using var appDb = AppDatabase.Open(Path.Combine(profileDir, "app.db"), masterKey);
 
+if (args.Contains("stats", StringComparer.OrdinalIgnoreCase))
+{
+    using var list = appDb.CreateCommand();
+    list.CommandText = "SELECT upn, db_path, dek FROM mailboxes ORDER BY id;";
+    using var rows = list.ExecuteReader();
+    while (rows.Read())
+    {
+        var statUpn = rows.GetString(0);
+        var statPath = rows.GetString(1);
+        if (!Path.IsPathRooted(statPath))
+            statPath = Path.GetFullPath(statPath);
+        using var statDb = MailboxDatabase.Open(statPath, (byte[])rows.GetValue(2));
+        Console.WriteLine($"— {statUpn} —");
+        Console.WriteLine($"Messages       : {Scalar(statDb, "SELECT count(*) FROM messages;"):N0}");
+        Console.WriteLine($"Unique blobs   : {Scalar(statDb, "SELECT count(*) FROM blobs;"):N0}");
+        Console.WriteLine($"Raw bytes      : {Convert.ToInt64(Scalar(statDb, "SELECT coalesce(sum(raw_size),0) FROM bodies;")),15:N0}");
+        Console.WriteLine($"Stored bytes   : {Convert.ToInt64(Scalar(statDb, "SELECT coalesce(sum(length(content)),0) FROM blobs;")),15:N0}");
+        Console.WriteLine($"DB file        : {new FileInfo(statPath).Length,15:N0}");
+    }
+    return;
+}
+
 // --- sign in (silent via cached token when possible) -------------------------
 var auth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
 AuthenticationResult? signIn = null;
@@ -90,11 +112,11 @@ Console.WriteLine(months > 0
     ? $"Syncing (initial window: last {months} month(s), incremental afterwards)…"
     : "Syncing (full mirror — everything, incremental afterwards)…");
 var stopwatch = Stopwatch.StartNew();
-var sync = new GraphMailboxSync(graph, mailboxDb, p =>
+var sync = new GraphMailboxSync(graph, () => MailboxDatabase.Open(mailboxDbPath, dek), p =>
 {
     if (p.Phase == GraphMailboxSync.SyncPhase.FolderDone && p.FolderDownloaded > 0)
-        Console.WriteLine($"  {p.FolderName}: +{p.FolderDownloaded}" +
-            $" (overall {p.OverallDownloaded}/{p.OverallTarget?.ToString() ?? "?"})");
+        Console.WriteLine($"  {p.FolderName}: +{p.FolderDownloaded:N0}" +
+            $" (overall {p.OverallDownloaded:N0}/{p.OverallTarget?.ToString("N0") ?? "?"})");
 });
 var stats = await sync.SyncAsync(since);
 stopwatch.Stop();

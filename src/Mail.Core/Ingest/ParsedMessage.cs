@@ -5,7 +5,8 @@ public enum AddressKind { From = 0, To = 1, Cc = 2, Bcc = 3, ReplyTo = 4, Sender
 
 public sealed record MessageAddress(AddressKind Kind, string Email, string? DisplayName);
 
-public sealed record AttachmentContent(string? FileName, string ContentType, bool IsInline, byte[] Content);
+public sealed record AttachmentContent(
+    string? FileName, string ContentType, bool IsInline, string? ContentId, byte[] Content);
 
 /// <summary>A byte range of the raw message; Dedup ranges are content-addressed candidates.</summary>
 public sealed record RawSegment(int Offset, int Length, bool Dedup);

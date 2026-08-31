@@ -148,6 +148,29 @@ public sealed class IngestionTests : IDisposable
     }
 
     [Fact]
+    public void Inline_image_content_id_is_stored_and_retrievable()
+    {
+        var message = new MimeMessage();
+        message.From.Add(new MailboxAddress("Alice", "alice@example.com"));
+        message.To.Add(new MailboxAddress("Bob", "bob@example.com"));
+        message.Subject = "with inline image";
+        var builder = new BodyBuilder { HtmlBody = "<p>logo: <img src=\"cid:logo123\"></p>" };
+        var image = builder.LinkedResources.Add("logo.png", SampleAttachment);
+        image.ContentId = "logo123";
+        message.Body = builder.ToMessageBody();
+        using var stream = new MemoryStream();
+        message.WriteTo(stream);
+        var raw = stream.ToArray();
+
+        var id = MailboxStore.IngestMessage(_conn, 1, raw, MimeMessageParser.Parse(raw));
+        var inline = MailboxStore.TryGetInlineAttachment(_conn, id, "logo123");
+        Assert.NotNull(inline);
+        Assert.Equal(SampleAttachment, inline.Value.Content);
+        Assert.Contains("image", inline.Value.ContentType);
+        Assert.Null(MailboxStore.TryGetInlineAttachment(_conn, id, "nope"));
+    }
+
+    [Fact]
     public void Html_to_text_strips_tags_scripts_and_decodes_entities()
     {
         var text = HtmlText.ToPlainText(

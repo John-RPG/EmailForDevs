@@ -71,12 +71,12 @@ public static class MailboxStore
         {
             var blobId = UpsertBlob(conn, tx, attachment.Content);
             Exec(conn, tx, """
-                INSERT INTO attachments(message_id, blob_id, file_name, content_type, is_inline, size)
-                VALUES(@m, @b, @f, @c, @i, @s);
+                INSERT INTO attachments(message_id, blob_id, file_name, content_type, is_inline, content_id, size)
+                VALUES(@m, @b, @f, @c, @i, @cid, @s);
                 """,
                 ("@m", messageId), ("@b", blobId), ("@f", attachment.FileName),
                 ("@c", attachment.ContentType), ("@i", attachment.IsInline ? 1 : 0),
-                ("@s", attachment.Content.Length));
+                ("@cid", attachment.ContentId), ("@s", attachment.Content.Length));
         }
 
         var participants = string.Join(' ', parsed.Addresses.Select(a =>
@@ -200,6 +200,33 @@ public static class MailboxStore
         tx.Commit();
         return true;
     }
+
+    /// <summary>Decoded inline attachment for cid: resolution in the preview.</summary>
+    public static (byte[] Content, string ContentType)? TryGetInlineAttachment(
+        SqliteConnection conn, long messageId, string contentId)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT b.compression, b.content, b.size, coalesce(att.content_type, 'application/octet-stream')
+            FROM attachments att JOIN blobs b ON b.id = att.blob_id
+            WHERE att.message_id = @m AND att.content_id = @c LIMIT 1;
+            """;
+        cmd.Parameters.AddWithValue("@m", messageId);
+        cmd.Parameters.AddWithValue("@c", contentId);
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read())
+            return null;
+        return (BlobCodec.Decode(reader.GetString(0), (byte[])reader.GetValue(1), reader.GetInt32(2)),
+                reader.GetString(3));
+    }
+
+    public static void SetMessageRead(SqliteConnection conn, long messageId, bool isRead) =>
+        Exec(conn, null, "UPDATE messages SET is_read = @r WHERE id = @id;",
+            ("@r", isRead ? 1 : 0), ("@id", messageId));
+
+    public static void MoveMessageLocal(SqliteConnection conn, long messageId, long folderId) =>
+        Exec(conn, null, "UPDATE messages SET folder_id = @f WHERE id = @id;",
+            ("@f", folderId), ("@id", messageId));
 
     public static string? GetDeltaToken(SqliteConnection conn, long folderId)
     {

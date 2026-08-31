@@ -36,7 +36,12 @@ public static class MailboxDatabase
         return cmd.ExecuteNonQuery();
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2];
+
+    const string V2 = """
+        ALTER TABLE attachments ADD COLUMN content_id TEXT;
+        CREATE INDEX ix_attachments_content_id ON attachments(message_id, content_id);
+        """;
 
     const string V1 = """
         CREATE TABLE folders(

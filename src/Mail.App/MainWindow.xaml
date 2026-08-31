@@ -183,6 +183,8 @@
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
                 <StackPanel Orientation="Horizontal">
+                    <TextBlock x:Name="ScanLabel" Margin="0,0,12,0" VerticalAlignment="Center"
+                               Foreground="Gray"/>
                     <TextBlock x:Name="SyncLabel" Margin="0,0,8,0" VerticalAlignment="Center"/>
                     <ProgressBar x:Name="SyncBar" Width="180" Height="14" VerticalAlignment="Center"/>
                     <Button x:Name="SyncButton" Content="Sync now" Margin="8,0,0,0"

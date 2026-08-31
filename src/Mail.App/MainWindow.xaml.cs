@@ -792,9 +792,9 @@ public partial class MainWindow : Window
                                 Log(LogLevel.Verbose, $"{p.FolderName}: {folderTarget:N0} message(s) to fetch.");
                             break;
                         case GraphMailboxSync.SyncPhase.Scanning:
-                            SyncLabel.Text =
+                            ScanLabel.Text =
                                 $"{p.FolderName} ({p.FolderIndex:N0}/{p.FolderCount:N0}): " +
-                                $"scanning… {p.FolderDownloaded:N0} item(s) checked";
+                                $"scanned {p.FolderDownloaded:N0}";
                             if (p.FolderName != lastScanFolder)
                             {
                                 lastScanFolder = p.FolderName ?? "";
@@ -854,6 +854,7 @@ public partial class MainWindow : Window
                                 Log($"{p.FolderName}: +{p.FolderDownloaded:N0} downloaded.");
                             else
                                 Log(LogLevel.Verbose, $"{p.FolderName}: up to date.");
+                            ScanLabel.Text = "";
                             UpdateTreeCounts(mailbox);
                             break;
                     }
@@ -885,6 +886,7 @@ public partial class MainWindow : Window
             _syncRunning = false;
             SyncButton.IsEnabled = true;
             SyncBar.IsIndeterminate = false;
+            ScanLabel.Text = "";
         }
     }
 }

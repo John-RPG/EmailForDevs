@@ -216,6 +216,8 @@
                     <ProgressBar x:Name="SyncBar" Width="180" Height="14" VerticalAlignment="Center"/>
                     <Button x:Name="SyncButton" Content="Sync now" Margin="8,0,0,0"
                             Padding="8,1" Click="OnSyncClick"/>
+                    <Button x:Name="AccountsButton" Content="Accounts…" Margin="6,0,0,0"
+                            Padding="8,1" Click="OnAccountsClick"/>
                 </StackPanel>
             </StatusBarItem>
         </StatusBar>

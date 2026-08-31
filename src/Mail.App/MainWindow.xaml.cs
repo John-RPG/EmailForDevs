@@ -88,6 +88,7 @@ public partial class MainWindow : Window
     readonly HashSet<LogLevel> _enabledLevels =
         [LogLevel.Verbose, LogLevel.Info, LogLevel.Warning, LogLevel.Error];
     ICollectionView? _logView;
+    System.Windows.Threading.DispatcherTimer? _autoSyncTimer;
     SqliteConnection? _appDb;
     string? _scratchRoot;
     bool _syncRunning;
@@ -107,6 +108,14 @@ public partial class MainWindow : Window
             OpenProfile();
             BuildColumnsMenu();
             StartSync();
+            // Delta is pull-only: poll periodically so server-side changes
+            // (new mail, reads/moves made elsewhere) show up without a click.
+            _autoSyncTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMinutes(2),
+            };
+            _autoSyncTimer.Tick += (_, _) => StartSync();
+            _autoSyncTimer.Start();
         };
         Closed += (_, _) => CloseAll();
     }
@@ -191,6 +200,7 @@ public partial class MainWindow : Window
 
     void CloseAll()
     {
+        _autoSyncTimer?.Stop();
         foreach (var mailbox in _mailboxes)
             mailbox.Db.Dispose();
         _appDb?.Dispose();
@@ -786,6 +796,51 @@ public partial class MainWindow : Window
 
     void OnSyncClick(object sender, RoutedEventArgs e) => StartSync();
 
+    void OnAccountsClick(object sender, RoutedEventArgs e)
+    {
+        if (_appDb is null || _scratchRoot is null)
+            return;
+        var window = new AccountsWindow(_appDb, _scratchRoot) { Owner = this };
+        window.ShowDialog();
+        if (!window.ChangesApplied)
+            return;
+        Log("Account settings changed — reloading mailboxes.");
+        foreach (var mailbox in _mailboxes)
+            mailbox.Db.Dispose();
+        _mailboxes.Clear();
+        _graphClients.Clear();
+        ReloadMailboxes();
+        StartSync();
+    }
+
+    /// <summary>Re-reads the mailbox registry (after config changes) and rebuilds the tree.</summary>
+    void ReloadMailboxes()
+    {
+        if (_appDb is null || _scratchRoot is null)
+            return;
+        var repoRoot = Path.GetDirectoryName(_scratchRoot)!;
+        using var cmd = _appDb.CreateCommand();
+        cmd.CommandText = """
+            SELECT upn, db_path, dek, coalesce(sync_window_months, 0),
+                   coalesce(sync_policy, 'MirrorServer')
+            FROM mailboxes WHERE enabled = 1 ORDER BY position, id;
+            """;
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var upn = reader.GetString(0);
+            var dbPath = reader.GetString(1);
+            if (!Path.IsPathRooted(dbPath))
+                dbPath = Path.Combine(repoRoot, dbPath);
+            var dek = (byte[])reader.GetValue(2);
+            _mailboxes.Add(new MailboxHandle(
+                upn, dbPath, dek, reader.GetInt32(3), reader.GetString(4),
+                MailboxDatabase.Open(dbPath, dek)));
+        }
+        BuildTree();
+        StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
+    }
+
     async void StartSync()
     {
         if (_syncRunning || _scratchRoot is null || _mailboxes.Count == 0)
@@ -917,6 +972,8 @@ public partial class MainWindow : Window
             _syncRunning = false;
             SyncButton.IsEnabled = true;
             SyncBar.IsIndeterminate = false;
+            SyncBar.Value = 0;
+            SyncBar.Maximum = 100;
             ScanLabel.Text = "";
         }
     }

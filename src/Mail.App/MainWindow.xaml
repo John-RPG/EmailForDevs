@@ -35,9 +35,36 @@
                           SelectedItemChanged="OnFolderSelected" BorderThickness="0,1,0,0"/>
                 <Expander Grid.Row="1" Header="Activity log" IsExpanded="True"
                           BorderThickness="0,1,0,0">
-                    <ListBox x:Name="ActivityLog" Height="170" FontFamily="Consolas"
-                             FontSize="11" BorderThickness="0"
-                             ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+                    <DockPanel>
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="2">
+                            <ToggleButton x:Name="FltDebug" Content="⚙" ToolTip="Debug"
+                                          Padding="6,0" Margin="1,0" Click="OnLogFilterChanged"/>
+                            <ToggleButton x:Name="FltVerbose" Content="·" ToolTip="Verbose" IsChecked="True"
+                                          Padding="8,0" Margin="1,0" Click="OnLogFilterChanged"/>
+                            <ToggleButton x:Name="FltInfo" Content="ℹ" ToolTip="Info" IsChecked="True"
+                                          Padding="7,0" Margin="1,0" Click="OnLogFilterChanged"/>
+                            <ToggleButton x:Name="FltWarning" Content="⚠" ToolTip="Warning" IsChecked="True"
+                                          Padding="6,0" Margin="1,0" Click="OnLogFilterChanged"/>
+                            <ToggleButton x:Name="FltError" Content="✖" ToolTip="Error" IsChecked="True"
+                                          Padding="6,0" Margin="1,0" Click="OnLogFilterChanged"/>
+                            <Button Content="Clear" Margin="8,0,0,0" Padding="6,0" Click="OnLogClear"/>
+                        </StackPanel>
+                        <ListBox x:Name="ActivityLog" Height="170" FontFamily="Consolas"
+                                 FontSize="11" BorderThickness="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Padding" Value="2,0"/>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Display}" Foreground="{Binding Brush}"
+                                               ToolTip="{Binding Message}"/>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
                 </Expander>
             </Grid>
 
@@ -72,17 +99,17 @@
                     </DataGrid.RowStyle>
                     <DataGrid.Columns>
                         <DataGridTextColumn x:Name="ColFrom" Header="From"
-                                            Binding="{Binding From}" Width="250"/>
+                                            Binding="{Binding From}" Width="Auto"/>
                         <DataGridTextColumn x:Name="ColFromName" Header="From Name"
-                                            Binding="{Binding FromName}" Width="160" Visibility="Collapsed"/>
+                                            Binding="{Binding FromName}" Width="Auto" Visibility="Collapsed"/>
                         <DataGridTextColumn x:Name="ColFromAddress" Header="From Address"
-                                            Binding="{Binding FromAddress}" Width="210" Visibility="Collapsed"/>
+                                            Binding="{Binding FromAddress}" Width="Auto" Visibility="Collapsed"/>
                         <DataGridTextColumn x:Name="ColTo" Header="To"
-                                            Binding="{Binding To}" Width="200"/>
+                                            Binding="{Binding To}" Width="Auto"/>
                         <DataGridTextColumn x:Name="ColReceived" Header="Received"
-                                            Binding="{Binding Received}" Width="120"/>
+                                            Binding="{Binding Received}" Width="Auto"/>
                         <DataGridTextColumn x:Name="ColSize" Header="KB"
-                                            Binding="{Binding SizeKb}" Width="60"
+                                            Binding="{Binding SizeKb}" Width="Auto"
                                             SortMemberPath="SizeVal">
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock">
@@ -99,7 +126,7 @@
                             <MenuItem Header="Mark read" Click="OnMarkRead"/>
                             <MenuItem Header="Mark unread" Click="OnMarkUnread"/>
                             <MenuItem Header="Delete" InputGestureText="Del" Click="OnDeleteMessages"/>
-                            <MenuItem x:Name="MoveToMenu" Header="Move to">
+                            <MenuItem x:Name="MoveToMenu" Header="Move to" SubmenuOpened="OnMoveToOpened">
                                 <MenuItem Header="(loading…)"/>
                             </MenuItem>
                             <Separator/>

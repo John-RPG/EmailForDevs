@@ -1,12 +1,15 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using Mail.Core.Ingest;
 using Mail.Core.Search;
 using Mail.Storage;
@@ -51,10 +54,36 @@ public partial class MainWindow : Window
         string FromAddress, string To, string Received, string SizeKb, double SizeVal,
         string Subject, bool IsUnread);
 
+    public enum LogLevel { Debug, Verbose, Info, Warning, Error }
+
+    public sealed record LogEntry(DateTime At, LogLevel Level, string Message)
+    {
+        public string Display => $"{Icon} {At:HH:mm:ss}  {Message}";
+        public string Icon => Level switch
+        {
+            LogLevel.Debug => "⚙",
+            LogLevel.Verbose => "·",
+            LogLevel.Info => "ℹ",
+            LogLevel.Warning => "⚠",
+            _ => "✖",
+        };
+        public Brush Brush => Level switch
+        {
+            LogLevel.Debug => Brushes.Gray,
+            LogLevel.Verbose => Brushes.Gray,
+            LogLevel.Warning => Brushes.DarkOrange,
+            LogLevel.Error => Brushes.Firebrick,
+            _ => Brushes.Black,
+        };
+    }
+
     readonly List<MailboxHandle> _mailboxes = [];
     readonly Dictionary<(string Upn, long FolderId), TreeViewItem> _folderItems = [];
     readonly Dictionary<string, GraphServiceClient> _graphClients = [];
-    readonly ObservableCollection<string> _log = [];
+    readonly ObservableCollection<LogEntry> _log = [];
+    readonly HashSet<LogLevel> _enabledLevels =
+        [LogLevel.Verbose, LogLevel.Info, LogLevel.Warning, LogLevel.Error];
+    ICollectionView? _logView;
     SqliteConnection? _appDb;
     string? _scratchRoot;
     bool _syncRunning;
@@ -67,7 +96,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        ActivityLog.ItemsSource = _log;
+        _logView = CollectionViewSource.GetDefaultView(_log);
+        _logView.Filter = o => o is LogEntry entry && _enabledLevels.Contains(entry.Level);
+        ActivityLog.ItemsSource = _logView;
         Loaded += (_, _) =>
         {
             OpenProfile();
@@ -77,14 +108,30 @@ public partial class MainWindow : Window
         Closed += (_, _) => CloseAll();
     }
 
-    void Log(string line)
+    void Log(string line) => Log(LogLevel.Info, line);
+
+    void Log(LogLevel level, string line)
     {
-        _log.Add($"{DateTime.Now:HH:mm:ss}  {line}");
-        while (_log.Count > 500)
+        var entry = new LogEntry(DateTime.Now, level, line);
+        _log.Add(entry);
+        while (_log.Count > 1000)
             _log.RemoveAt(0);
-        if (ActivityLog.Items.Count > 0)
-            ActivityLog.ScrollIntoView(ActivityLog.Items[^1]);
+        if (_enabledLevels.Contains(level))
+            ActivityLog.ScrollIntoView(entry);
     }
+
+    void OnLogFilterChanged(object sender, RoutedEventArgs e)
+    {
+        _enabledLevels.Clear();
+        if (FltDebug.IsChecked == true) _enabledLevels.Add(LogLevel.Debug);
+        if (FltVerbose.IsChecked == true) _enabledLevels.Add(LogLevel.Verbose);
+        if (FltInfo.IsChecked == true) _enabledLevels.Add(LogLevel.Info);
+        if (FltWarning.IsChecked == true) _enabledLevels.Add(LogLevel.Warning);
+        if (FltError.IsChecked == true) _enabledLevels.Add(LogLevel.Error);
+        _logView?.Refresh();
+    }
+
+    void OnLogClear(object sender, RoutedEventArgs e) => _log.Clear();
 
     // ---- startup -------------------------------------------------------------
 
@@ -125,7 +172,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = ex.Message;
-            Log($"ERROR: {ex.Message}");
+            Log(LogLevel.Error, $"ERROR: {ex.Message}");
             MessageBox.Show(this, ex.Message, "eeeMail", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -161,6 +208,7 @@ public partial class MainWindow : Window
             item.Click += (_, _) =>
             {
                 column.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+                AutoSizeColumns();
             };
             ColumnsMenu.Items.Add(item);
         }
@@ -323,6 +371,21 @@ public partial class MainWindow : Window
             }
         }
         MessageGrid.ItemsSource = rows;
+        AutoSizeColumns();
+    }
+
+    /// <summary>Re-fits Auto columns to the currently realized rows; Subject keeps its star width.</summary>
+    void AutoSizeColumns()
+    {
+        foreach (var column in MessageGrid.Columns)
+            if (!ReferenceEquals(column, ColSubject) && column.Visibility == Visibility.Visible)
+                column.Width = 0;
+        Dispatcher.BeginInvoke(() =>
+        {
+            foreach (var column in MessageGrid.Columns)
+                if (!ReferenceEquals(column, ColSubject) && column.Visibility == Visibility.Visible)
+                    column.Width = DataGridLength.Auto;
+        }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
     // ---- message actions -----------------------------------------------------
@@ -358,7 +421,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            Log($"Server update failed (local change kept, next sync reconciles): {ex.Message}");
+            Log(LogLevel.Warning, $"Server update failed (local change kept, next sync reconciles): {ex.Message}");
         }
     }
 
@@ -386,7 +449,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            Log($"Server delete failed (local change kept, next sync reconciles): {ex.Message}");
+            Log(LogLevel.Warning, $"Server delete failed (local change kept, next sync reconciles): {ex.Message}");
         }
     }
 
@@ -423,7 +486,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            Log($"Server move failed (local change kept, next sync reconciles): {ex.Message}");
+            Log(LogLevel.Warning, $"Server move failed (local change kept, next sync reconciles): {ex.Message}");
         }
     }
 
@@ -445,7 +508,13 @@ public partial class MainWindow : Window
         var account = accounts.FirstOrDefault(a =>
             string.Equals(a.Username, mailbox.Upn, StringComparison.OrdinalIgnoreCase));
         var token = account is null ? null : await auth.AcquireSilentAsync(account);
-        token ??= await auth.SignInInteractiveAsync(mailbox.Upn);
+        if (token is not null)
+            Log(LogLevel.Debug, $"Silent token acquired for {mailbox.Upn}.");
+        else
+        {
+            Log($"Interactive sign-in required for {mailbox.Upn}…");
+            token = await auth.SignInInteractiveAsync(mailbox.Upn);
+        }
         var client = new GraphServiceClient(
             new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, token)));
         _graphClients[mailbox.Upn] = client;
@@ -465,7 +534,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             StatusText.Text = $"Failed to load message {row.Id}: {ex.Message}";
-            Log($"ERROR loading message {row.Id}: {ex.Message}");
+            Log(LogLevel.Error, $"Loading message {row.Id} failed: {ex.Message}");
         }
     }
 
@@ -575,7 +644,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            Log($"Preview failed: {ex.Message}");
+            Log(LogLevel.Error, $"Preview failed: {ex.Message}");
             StatusText.Text = $"Preview failed: {ex.Message}";
         }
     }
@@ -623,7 +692,7 @@ public partial class MainWindow : Window
                 return;
             }
             args.Response = core.Environment.CreateWebResourceResponse(null, 403, "Blocked", "");
-            Dispatcher.BeginInvoke(() => Log($"Preview blocked: {Truncate(uri, 90)}"));
+            Dispatcher.BeginInvoke(() => Log(LogLevel.Verbose, $"Preview blocked: {Truncate(uri, 90)}"));
         };
         core.NavigationStarting += (_, args) =>
         {
@@ -639,7 +708,7 @@ public partial class MainWindow : Window
         };
         core.NewWindowRequested += (_, args) => args.Handled = true;
         _webViewReady = true;
-        Log("Preview engine initialized (scripts off, network fenced).");
+        Log(LogLevel.Debug, "Preview engine initialized (scripts off, network fenced).");
     }
 
     static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
@@ -705,6 +774,9 @@ public partial class MainWindow : Window
                 var since = mailbox.Since;
                 var stopwatch = Stopwatch.StartNew();
                 var lastTreeUpdate = 0;
+                var lastDownloadLog = 0;
+                var lastScanFolder = "";
+                var lastScanLog = 0;
                 var rateSamples = new Queue<(TimeSpan At, int Downloaded)>();
 
                 void OnProgress(GraphMailboxSync.SyncProgressEvent p) => Dispatcher.BeginInvoke(() =>
@@ -716,9 +788,27 @@ public partial class MainWindow : Window
                             break;
                         case GraphMailboxSync.SyncPhase.Counting:
                             SyncLabel.Text = $"Counting… ({p.FolderIndex:N0}/{p.FolderCount:N0}) {p.FolderName}";
+                            if (p.FolderTarget is int folderTarget)
+                                Log(LogLevel.Verbose, $"{p.FolderName}: {folderTarget:N0} message(s) to fetch.");
+                            break;
+                        case GraphMailboxSync.SyncPhase.Scanning:
+                            SyncLabel.Text =
+                                $"{p.FolderName} ({p.FolderIndex:N0}/{p.FolderCount:N0}): " +
+                                $"scanning… {p.FolderDownloaded:N0} item(s) checked";
+                            if (p.FolderName != lastScanFolder)
+                            {
+                                lastScanFolder = p.FolderName ?? "";
+                                lastScanLog = 0;
+                                Log(LogLevel.Verbose, $"{p.FolderName}: listing…");
+                            }
+                            if (p.FolderDownloaded - lastScanLog >= 500)
+                            {
+                                lastScanLog = p.FolderDownloaded;
+                                Log(LogLevel.Verbose, $"{p.FolderName}: {p.FolderDownloaded:N0} item(s) scanned…");
+                            }
                             break;
                         case GraphMailboxSync.SyncPhase.Throttled:
-                            Log($"Throttled (429) — download workers reduced to {p.FolderDownloaded:N0}.");
+                            Log(LogLevel.Warning, $"Throttled (429) — download workers reduced to {p.FolderDownloaded:N0}.");
                             break;
                         case GraphMailboxSync.SyncPhase.Downloading:
                             if (p.OverallTarget is int total && total > 0)
@@ -747,6 +837,12 @@ public partial class MainWindow : Window
                                 $"{p.FolderName} ({p.FolderIndex:N0}/{p.FolderCount:N0}): " +
                                 $"{p.FolderDownloaded:N0}/{p.FolderTarget?.ToString("N0") ?? "?"} · " +
                                 $"overall {p.OverallDownloaded:N0}/{p.OverallTarget?.ToString("N0") ?? "?"}{eta}";
+                            if (p.OverallDownloaded - lastDownloadLog >= 250)
+                            {
+                                lastDownloadLog = p.OverallDownloaded;
+                                Log(LogLevel.Verbose,
+                                    $"Downloaded {p.OverallDownloaded:N0}/{p.OverallTarget?.ToString("N0") ?? "?"} so far…");
+                            }
                             if (p.OverallDownloaded - lastTreeUpdate >= 50)
                             {
                                 lastTreeUpdate = p.OverallDownloaded;
@@ -755,7 +851,9 @@ public partial class MainWindow : Window
                             break;
                         case GraphMailboxSync.SyncPhase.FolderDone:
                             if (p.FolderDownloaded > 0)
-                                Log($"{p.FolderName}: +{p.FolderDownloaded:N0}");
+                                Log($"{p.FolderName}: +{p.FolderDownloaded:N0} downloaded.");
+                            else
+                                Log(LogLevel.Verbose, $"{p.FolderName}: up to date.");
                             UpdateTreeCounts(mailbox);
                             break;
                     }
@@ -780,7 +878,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SyncLabel.Text = $"Sync failed: {ex.Message}";
-            Log($"SYNC ERROR: {ex.Message}");
+            Log(LogLevel.Error, $"SYNC ERROR: {ex.Message}");
         }
         finally
         {

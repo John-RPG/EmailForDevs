@@ -30,7 +30,7 @@ public sealed class GraphMailboxSync(
     int maxConcurrentDownloads = 1,
     int maxConcurrentFolders = 1)
 {
-    public enum SyncPhase { Folders, Counting, Downloading, FolderDone, Throttled }
+    public enum SyncPhase { Folders, Counting, Scanning, Downloading, FolderDone, Throttled }
 
     public sealed record SyncProgressEvent(
         SyncPhase Phase, string? FolderName, int FolderIndex, int FolderCount,
@@ -131,6 +131,7 @@ public sealed class GraphMailboxSync(
             using var readDb = dbFactory();
             var deltaBuilder = graph.Me.MailFolders[folder.ServerId].Messages.Delta;
             var downloaded = 0;
+            var scanned = 0;
             progress?.Invoke(new(SyncPhase.Downloading, folder.Name, index, _folderCount,
                 0, target, _overallDownloaded, _overallTarget));
 
@@ -197,6 +198,12 @@ public sealed class GraphMailboxSync(
                         Interlocked.Increment(ref _failed);
                     }
                 }
+                // Per-page heartbeat (FolderDownloaded carries items examined) so
+                // resume scans over known messages are visible, not silent.
+                scanned += page.Value?.Count ?? 0;
+                progress?.Invoke(new(SyncPhase.Scanning, folder.Name, index, _folderCount,
+                    scanned, target, _overallDownloaded, _overallTarget));
+
                 if (page.OdataNextLink is not null)
                 {
                     // Mid-listing checkpoint: enqueued behind this page's data ops,

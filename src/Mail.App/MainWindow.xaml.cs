@@ -32,7 +32,14 @@ public partial class MainWindow : Window
     const int RawDisplayCap = 2 * 1024 * 1024;
     const int PreviewHtmlCap = 1_500_000; // NavigateToString limit safety
 
-    sealed record MailboxHandle(string Upn, string DbPath, byte[] Dek, int WindowMonths, SqliteConnection Db);
+    sealed record MailboxHandle(
+        string Upn, string DbPath, byte[] Dek, int WindowMonths, string Policy, SqliteConnection Db)
+    {
+        public bool IsFullMirror => Policy == "MirrorServer" || WindowMonths <= 0;
+        public string ScopeText => IsFullMirror ? "full mirror" : $"scoped: last {WindowMonths} month(s)";
+        public DateTimeOffset? Since =>
+            IsFullMirror ? null : DateTimeOffset.UtcNow.AddMonths(-WindowMonths);
+    }
     sealed record FolderNode(MailboxHandle Mailbox, long FolderId, string Name);
     public sealed record MessageRow(
         object Mailbox, long Id, string FromName, string FromAddress, string To,
@@ -85,7 +92,8 @@ public partial class MainWindow : Window
 
             using var cmd = _appDb.CreateCommand();
             cmd.CommandText = """
-                SELECT upn, db_path, dek, coalesce(sync_window_months, 1)
+                SELECT upn, db_path, dek, coalesce(sync_window_months, 0),
+                       coalesce(sync_policy, 'MirrorServer')
                 FROM mailboxes WHERE enabled = 1 ORDER BY position, id;
                 """;
             using var reader = cmd.ExecuteReader();
@@ -97,7 +105,8 @@ public partial class MainWindow : Window
                     dbPath = Path.Combine(repoRoot, dbPath);
                 var dek = (byte[])reader.GetValue(2);
                 _mailboxes.Add(new MailboxHandle(
-                    upn, dbPath, dek, reader.GetInt32(3), MailboxDatabase.Open(dbPath, dek)));
+                    upn, dbPath, dek, reader.GetInt32(3), reader.GetString(4),
+                    MailboxDatabase.Open(dbPath, dek)));
             }
             BuildTree();
             StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
@@ -136,7 +145,11 @@ public partial class MainWindow : Window
         TreeViewItem? inboxItem = null;
         foreach (var mailbox in _mailboxes)
         {
-            var root = new TreeViewItem { Header = mailbox.Upn, IsExpanded = true };
+            var root = new TreeViewItem
+            {
+                Header = $"{mailbox.Upn}  [{mailbox.ScopeText}]",
+                IsExpanded = true,
+            };
             var rows = QueryFolders(mailbox);
             var localCounts = QueryLocalCounts(mailbox);
             var items = new Dictionary<long, TreeViewItem>();
@@ -532,7 +545,7 @@ public partial class MainWindow : Window
 
                 var graph = new GraphServiceClient(
                     new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, token)));
-                var since = DateTimeOffset.UtcNow.AddMonths(-mailbox.WindowMonths);
+                var since = mailbox.Since;
                 var stopwatch = Stopwatch.StartNew();
                 var lastTreeUpdate = 0;
 
@@ -588,10 +601,10 @@ public partial class MainWindow : Window
                 stopwatch.Stop();
                 UpdateTreeCounts(mailbox);
                 var summary = stats.Added + stats.Updated + stats.Removed == 0
-                    ? $"Up to date — {stats.Folders} folders checked in {stopwatch.Elapsed.TotalSeconds:F1}s"
-                    : $"{mailbox.Upn}: +{stats.Added} ~{stats.Updated} -{stats.Removed}" +
+                    ? $"Up to date ({mailbox.ScopeText}) — {stats.Folders} folders checked in {stopwatch.Elapsed.TotalSeconds:F1}s"
+                    : $"Sync complete ({mailbox.ScopeText}): +{stats.Added} ~{stats.Updated} -{stats.Removed}" +
                       (stats.Failed > 0 ? $" ({stats.Failed} failed)" : "") +
-                      $" in {stopwatch.Elapsed.TotalSeconds:F0}s";
+                      $" in {stopwatch.Elapsed.TotalMinutes:F1} min";
                 SyncLabel.Text = summary;
                 Log(summary);
             }

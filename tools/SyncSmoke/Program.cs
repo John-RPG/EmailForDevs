@@ -14,7 +14,11 @@ using Microsoft.Graph;
 using Microsoft.Identity.Client;
 using Microsoft.Kiota.Abstractions.Authentication;
 
+// First arg: sync window in months, 0 = everything (full mirror). "config"
+// anywhere in the args: update the registry + reset checkpoints, then exit
+// (lets the app do the actual download with its progress UI).
 var months = args.Length > 0 && int.TryParse(args[0], out var m) ? m : 1;
+var configOnly = args.Contains("config", StringComparer.OrdinalIgnoreCase);
 var root = Path.Combine(Directory.GetCurrentDirectory(), ".scratch");
 var profileDir = Path.Combine(root, "profile");
 
@@ -50,11 +54,41 @@ Console.WriteLine($"Signed in as {upn}");
 var dek = EnsureMailboxRegistered(appDb, upn, out var mailboxDbPath);
 using var mailboxDb = MailboxDatabase.Open(mailboxDbPath, dek);
 
+if (args.Length > 0)
+{
+    using (var update = appDb.CreateCommand())
+    {
+        update.CommandText =
+            "UPDATE mailboxes SET sync_policy = @p, sync_window_months = @m WHERE upn = @u;";
+        update.Parameters.AddWithValue("@p", months == 0 ? "MirrorServer" : "WindowedCache");
+        update.Parameters.AddWithValue("@m", months == 0 ? DBNull.Value : months);
+        update.Parameters.AddWithValue("@u", upn);
+        update.ExecuteNonQuery();
+    }
+    using (var reset = mailboxDb.CreateCommand())
+    {
+        // Cleared checkpoints force a fresh initial pass with the new window;
+        // already-stored messages are recognized by server id, not re-downloaded.
+        reset.CommandText = "DELETE FROM sync_state;";
+        reset.ExecuteNonQuery();
+    }
+    Console.WriteLine(months == 0
+        ? "Policy set: MirrorServer (everything). Checkpoints reset."
+        : $"Policy set: WindowedCache, last {months} month(s). Checkpoints reset.");
+}
+if (configOnly)
+{
+    Console.WriteLine("Config-only run: no sync performed. Launch the app (or rerun without 'config') to download.");
+    return;
+}
+
 // --- sync --------------------------------------------------------------------
 var graph = new GraphServiceClient(
     new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, signIn)));
-var since = DateTimeOffset.UtcNow.AddMonths(-months);
-Console.WriteLine($"Syncing (initial window: last {months} month(s), incremental afterwards)…");
+var since = months > 0 ? DateTimeOffset.UtcNow.AddMonths(-months) : (DateTimeOffset?)null;
+Console.WriteLine(months > 0
+    ? $"Syncing (initial window: last {months} month(s), incremental afterwards)…"
+    : "Syncing (full mirror — everything, incremental afterwards)…");
 var stopwatch = Stopwatch.StartNew();
 var sync = new GraphMailboxSync(graph, mailboxDb, p =>
 {

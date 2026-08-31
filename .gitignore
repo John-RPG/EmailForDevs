@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+*.binlog
+
+# IDE / tooling
+.vs/
+.vscode/
+*.user
+*.suo
+
+# Local-only files (settings.local.json, topic-tree.local.md, etc.)
+*.local.*
+.*/**/*.local.*
+
+# Scratch / working files
+.scratch/
+
+# Local app data during dev (mailbox DBs, token caches)
+data/
+
+# Test results
+TestResults/

@@ -29,15 +29,32 @@ public sealed class GraphAuthenticator
 
     readonly IPublicClientApplication _app;
 
-    public GraphAuthenticator(string tokenCachePath, Func<IntPtr>? parentWindowHandle = null)
+    /// <summary>
+    /// Browser-based sign-in by default: tokens belong to this app alone, and
+    /// nothing is registered with Windows. The WAM broker is opt-in only
+    /// (<paramref name="useWindowsBroker"/>) because it prompts to add the
+    /// account to the device ("Use this account everywhere on your device"),
+    /// which for work accounts can also pull in device-registration policy.
+    /// </summary>
+    public GraphAuthenticator(
+        string tokenCachePath,
+        Func<IntPtr>? parentWindowHandle = null,
+        bool useWindowsBroker = false)
     {
         var builder = PublicClientApplicationBuilder.Create(ClientId)
             .WithAuthority(Authority);
-        builder = parentWindowHandle is not null
-            ? builder
+        if (useWindowsBroker && parentWindowHandle is not null)
+        {
+            builder = builder
                 .WithBroker(new BrokerOptions(BrokerOptions.OperatingSystems.Windows))
-                .WithParentActivityOrWindow(parentWindowHandle)
-            : builder.WithRedirectUri("http://localhost");
+                .WithParentActivityOrWindow(parentWindowHandle);
+        }
+        else
+        {
+            builder = builder.WithRedirectUri("http://localhost");
+            if (parentWindowHandle is not null)
+                builder = builder.WithParentActivityOrWindow(parentWindowHandle);
+        }
         _app = builder.Build();
         TokenCacheStorage.Attach(_app.UserTokenCache, tokenCachePath);
     }
@@ -64,12 +81,19 @@ public sealed class GraphAuthenticator
         }
     }
 
+    /// <summary>
+    /// Interactive sign-in in the system browser (loopback redirect). Prompts
+    /// for account selection so a second account can be added even when Windows
+    /// already knows one.
+    /// </summary>
     public Task<AuthenticationResult> SignInInteractiveAsync(
         string? loginHint = null, CancellationToken ct = default)
     {
-        var request = _app.AcquireTokenInteractive(MailScopes);
-        if (loginHint is not null)
-            request = request.WithLoginHint(loginHint);
+        var request = _app.AcquireTokenInteractive(MailScopes)
+            .WithUseEmbeddedWebView(false);
+        request = loginHint is not null
+            ? request.WithLoginHint(loginHint)
+            : request.WithPrompt(Prompt.SelectAccount);
         return request.ExecuteAsync(ct);
     }
 

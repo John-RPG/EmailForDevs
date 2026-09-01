@@ -85,7 +85,7 @@ public sealed class FolderNodeViewModel : INotifyPropertyChanged
             else if (Counts.Length > 0)
                 parts.Add($"{Counts} unread");
             if (LastActivity is { } last)
-                parts.Add($"newest: {last.ToLocalTime():yyyy-MM-dd HH:mm}");
+                parts.Add($"newest: {last.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
             return string.Join("\n", parts);
         }
     }

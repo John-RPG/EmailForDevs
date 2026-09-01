@@ -53,7 +53,12 @@ public partial class MainWindow : Window
     public sealed record MessageRow(
         object Mailbox, long Id, string? ServerId, string Status, string From, string FromName,
         string FromAddress, string To, string Received, string SizeKb, double SizeVal,
-        string Subject, bool IsUnread);
+        string Subject, bool IsUnread)
+    {
+        /// <summary>Sort key for the Received column: the real instant, not the
+        /// formatted string, so sorting survives a format change.</summary>
+        public DateTimeOffset? ReceivedValue { get; init; }
+    }
 
     public sealed record AttachmentItem(
         object Mailbox, long Id, string Name, string ContentType, string SizeKb,
@@ -685,11 +690,16 @@ public partial class MainWindow : Window
                     Received: reader.IsDBNull(2)
                         ? ""
                         : DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2))
-                            .ToLocalTime().ToString("yyyy-MM-dd HH:mm"),
+                            .ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
                     SizeKb: sizeVal.ToString("N0"),
                     SizeVal: sizeVal,
                     Subject: reader.IsDBNull(1) ? "" : reader.GetString(1),
-                    IsUnread: reader.GetInt64(4) == 0));
+                    IsUnread: reader.GetInt64(4) == 0)
+                {
+                    ReceivedValue = reader.IsDBNull(2)
+                        ? null
+                        : DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2)),
+                });
             }
         }
         MessageGrid.ItemsSource = rows;

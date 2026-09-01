@@ -205,7 +205,8 @@
                         <DataGridTextColumn x:Name="ColTo" Header="To"
                                             Binding="{Binding To}" Width="Auto"/>
                         <DataGridTextColumn x:Name="ColReceived" Header="Received"
-                                            Binding="{Binding Received}" Width="Auto"/>
+                                            Binding="{Binding Received}" Width="Auto"
+                                            SortMemberPath="ReceivedValue"/>
                         <DataGridTextColumn x:Name="ColSize" Header="KB"
                                             Binding="{Binding SizeKb}" Width="Auto"
                                             SortMemberPath="SizeVal">

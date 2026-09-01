@@ -40,6 +40,44 @@ else
 
 using var appDb = AppDatabase.Open(Path.Combine(profileDir, "app.db"), masterKey);
 
+if (args.Contains("junk", StringComparer.OrdinalIgnoreCase))
+{
+    // Lists recent items directly from named folders. $search skips Junk on
+    // Outlook.com, so enumerate the folder instead of trusting a search.
+    var jAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    foreach (var acct in await jAuth.GetAccountsAsync())
+    {
+        var tok = await jAuth.AcquireSilentAsync(acct);
+        if (tok is null) { Console.WriteLine($"{acct.Username}: needs sign-in"); continue; }
+        var g = new GraphServiceClient(
+            new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(jAuth, tok)));
+        Console.WriteLine($"--- {acct.Username} ---");
+        foreach (var folder in new[] { "junkemail", "inbox", "deleteditems" })
+        {
+            try
+            {
+                var page = await g.Me.MailFolders[folder].Messages.GetAsync(rc =>
+                {
+                    rc.QueryParameters.Select = ["subject", "receivedDateTime", "from"];
+                    rc.QueryParameters.Top = 8;
+                    rc.QueryParameters.Orderby = ["receivedDateTime desc"];
+                });
+                Console.WriteLine($"  [{folder}] {page?.Value?.Count ?? 0} recent:");
+                foreach (var msg in page?.Value ?? [])
+                {
+                    var sender = msg.From?.EmailAddress?.Address ?? "(none)";
+                    Console.WriteLine($"    {msg.ReceivedDateTime:u}  {sender,-32}  {msg.Subject}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  [{folder}] failed: {ex.Message}");
+            }
+        }
+    }
+    return;
+}
+
 if (args.Contains("probe", StringComparer.OrdinalIgnoreCase))
 {
     // Asks Graph directly (bypassing our sync) where the test messages are,
@@ -232,6 +270,50 @@ if (args.Contains("sendtest", StringComparer.OrdinalIgnoreCase))
         Console.WriteLine(await response.Content.ReadAsStringAsync());
     else
         Console.WriteLine($"Sent from {upn} to {recipient} with Message-ID {outgoing.MessageId}");
+    return;
+}
+
+if (args.Contains("ingestbench", StringComparer.OrdinalIgnoreCase))
+{
+    // Measures the write side alone: parse + compress + hash + insert, using
+    // messages already stored (so no network is involved).
+    using var src = MailboxDatabase.Open(mailboxDbPath, dek);
+    var raws = new List<byte[]>();
+    using (var pick = src.CreateCommand())
+    {
+        pick.CommandText = "SELECT id FROM messages ORDER BY id DESC LIMIT 200;";
+        var ids = new List<long>();
+        using (var r = pick.ExecuteReader()) while (r.Read()) ids.Add(r.GetInt64(0));
+        foreach (var id in ids)
+        {
+            try { raws.Add(MailboxStore.GetRawMessage(src, id)); } catch { }
+        }
+    }
+    Console.WriteLine($"Loaded {raws.Count} sample messages " +
+        $"({raws.Sum(r => (long)r.Length) / 1024.0 / 1024.0:N1} MB raw)");
+
+    var scratchPath = Path.Combine(root, "ingestbench.db");
+    if (File.Exists(scratchPath)) File.Delete(scratchPath);
+    using var dst = MailboxDatabase.Open(scratchPath, dek);
+    using (var mk = dst.CreateCommand())
+    {
+        mk.CommandText = "INSERT INTO folders(id, name, special_use) VALUES(1,'Bench','inbox');";
+        mk.ExecuteNonQuery();
+    }
+
+    var swParse = System.Diagnostics.Stopwatch.StartNew();
+    var parsed = raws.Select(r => Mail.Core.Ingest.MimeMessageParser.Parse(r)).ToList();
+    swParse.Stop();
+    Console.WriteLine($"parse only      : {raws.Count / swParse.Elapsed.TotalSeconds,8:N1} msg/s");
+
+    var swIngest = System.Diagnostics.Stopwatch.StartNew();
+    for (var i = 0; i < raws.Count; i++)
+        MailboxStore.IngestMessage(dst, 1, raws[i], parsed[i], DateTimeOffset.Now, $"bench-{i}");
+    swIngest.Stop();
+    Console.WriteLine($"ingest (writer) : {raws.Count / swIngest.Elapsed.TotalSeconds,8:N1} msg/s   <-- writer ceiling");
+    Console.WriteLine($"                  {swIngest.Elapsed.TotalMilliseconds / raws.Count,8:N1} ms per message");
+    dst.Dispose();
+    if (File.Exists(scratchPath)) File.Delete(scratchPath);
     return;
 }
 

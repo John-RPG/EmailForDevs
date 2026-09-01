@@ -1101,7 +1101,9 @@ public partial class MainWindow : Window
                             }
                             break;
                         case GraphMailboxSync.SyncPhase.Throttled:
-                            Log(LogLevel.Warning, $"Throttled (429) — download workers reduced to {p.FolderDownloaded:N0}.");
+                            // FolderDownloaded carries the new worker limit.
+                            Log(LogLevel.Warning,
+                                $"Concurrency now {p.FolderDownloaded:N0} worker(s) (429 backoff / recovery).");
                             break;
                         case GraphMailboxSync.SyncPhase.Downloading:
                             if (p.OverallTarget is int total && total > 0)

@@ -258,7 +258,11 @@ public sealed class GraphMailboxSync(
         {
             try
             {
-                return await action();
+                var result = await action();
+                if (throttle.NoteSuccess() is int grown)
+                    progress?.Invoke(new(SyncPhase.Throttled, null, 0, _folderCount,
+                        grown, null, _overallDownloaded, _overallTarget));
+                return result;
             }
             catch (ODataError ex) when (ex.ResponseStatusCode == 429)
             {
@@ -404,12 +408,23 @@ public sealed class GraphMailboxSync(
         }
     }
 
-    /// <summary>Semaphore whose effective limit only shrinks (permits retired on 429).</summary>
+    /// <summary>
+    /// Additive-increase / multiplicative-decrease concurrency limiter: a 429
+    /// retires a permit, and a run of clean successes hands one back. Without the
+    /// recovery half, a single throttling episode early in a long sync would pin
+    /// the pool at one worker for the rest of the run.
+    /// </summary>
     sealed class AdaptiveThrottle(int initial)
     {
+        const int SuccessesBeforeGrowth = 50;
+
         readonly SemaphoreSlim _sem = new(initial, initial);
         readonly object _gate = new();
+        readonly int _max = initial;
         int _limit = initial;
+        int _successes;
+
+        public int Limit { get { lock (_gate) return _limit; } }
 
         public Task WaitAsync(CancellationToken ct) => _sem.WaitAsync(ct);
         public void Release() => _sem.Release();
@@ -418,8 +433,25 @@ public sealed class GraphMailboxSync(
         {
             lock (_gate)
             {
+                _successes = 0;
                 if (_limit > 1 && _sem.Wait(0))
                     _limit--;
+                return _limit;
+            }
+        }
+
+        /// <summary>Returns the new limit when a permit is restored, else null.</summary>
+        public int? NoteSuccess()
+        {
+            lock (_gate)
+            {
+                if (_limit >= _max)
+                    return null;
+                if (++_successes < SuccessesBeforeGrowth)
+                    return null;
+                _successes = 0;
+                _limit++;
+                _sem.Release();
                 return _limit;
             }
         }

@@ -10,6 +10,7 @@ using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using Mail.Core.Compose;
 using Mail.Core.Ingest;
 using Mail.Core.Search;
 using Mail.Storage;
@@ -103,6 +104,10 @@ public partial class MainWindow : Window
         _logView = CollectionViewSource.GetDefaultView(_log);
         _logView.Filter = o => o is LogEntry entry && _enabledLevels.Contains(entry.Level);
         ActivityLog.ItemsSource = _logView;
+        CommandBindings.Add(new CommandBinding(ComposeCommand, (_, _) => OpenCompose(null)));
+        CommandBindings.Add(new CommandBinding(ReplyCommand, (_, _) => ReplyToSelected(ReplyKind.Reply)));
+        CommandBindings.Add(new CommandBinding(ReplyAllCommand, (_, _) => ReplyToSelected(ReplyKind.ReplyAll)));
+        CommandBindings.Add(new CommandBinding(ForwardCommand, (_, _) => ReplyToSelected(ReplyKind.Forward)));
         Loaded += (_, _) =>
         {
             OpenProfile();
@@ -202,7 +207,25 @@ public partial class MainWindow : Window
     {
         _autoSyncTimer?.Stop();
         foreach (var mailbox in _mailboxes)
+        {
+            try
+            {
+                // Sweep blobs orphaned by deletes, then fold the WAL back into the
+                // main file so on-disk size reflects reality and a copy of the .db
+                // alone is a complete backup.
+                var swept = MailboxDatabase.CollectGarbageBlobs(mailbox.Db);
+                using var cmd = mailbox.Db.CreateCommand();
+                cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+                cmd.ExecuteNonQuery();
+                if (swept > 0)
+                    Log(LogLevel.Debug, $"{mailbox.Upn}: swept {swept:N0} orphaned blob(s).");
+            }
+            catch
+            {
+                // Never let housekeeping block shutdown.
+            }
             mailbox.Db.Dispose();
+        }
         _appDb?.Dispose();
     }
 
@@ -516,6 +539,20 @@ public partial class MainWindow : Window
             LoadFolder(node);
     }
 
+    /// <summary>Raw access token for calls the typed SDK cannot express (raw-MIME send).</summary>
+    async Task<string> GetAccessTokenAsync(MailboxHandle mailbox)
+    {
+        var auth = new GraphAuthenticator(
+            Path.Combine(_scratchRoot!, "msal.cache"),
+            () => new WindowInteropHelper(this).Handle);
+        var accounts = await auth.GetAccountsAsync();
+        var account = accounts.FirstOrDefault(a =>
+            string.Equals(a.Username, mailbox.Upn, StringComparison.OrdinalIgnoreCase));
+        var result = account is null ? null : await auth.AcquireSilentAsync(account);
+        result ??= await auth.SignInInteractiveAsync(mailbox.Upn);
+        return result.AccessToken;
+    }
+
     async Task<GraphServiceClient> GetGraphAsync(MailboxHandle mailbox)
     {
         if (_graphClients.TryGetValue(mailbox.Upn, out var cached))
@@ -739,11 +776,8 @@ public partial class MainWindow : Window
                 args.Uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                 return;
             args.Cancel = true;
-            Dispatcher.BeginInvoke(() =>
-            {
-                StatusText.Text = $"Link blocked (opens externally in a later build): {args.Uri}";
-                Log($"Link click blocked: {Truncate(args.Uri, 90)}");
-            });
+            var target = args.Uri;
+            Dispatcher.BeginInvoke(() => ConfirmOpenLink(target));
         };
         core.NewWindowRequested += (_, args) => args.Handled = true;
         _webViewReady = true;
@@ -751,6 +785,144 @@ public partial class MainWindow : Window
     }
 
     static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+
+    /// <summary>
+    /// Opens a link from a message only after showing the real destination, with
+    /// a warning when the host uses punycode or an unusual scheme (classic
+    /// phishing tricks this client refuses to hide).
+    /// </summary>
+    void ConfirmOpenLink(string uri)
+    {
+        Uri.TryCreate(uri, UriKind.Absolute, out var parsed);
+        var host = parsed?.Host ?? "(unparseable)";
+        var warning = "";
+        if (host.Contains("xn--", StringComparison.OrdinalIgnoreCase))
+            warning = "\n\nWARNING: this host uses punycode, which can imitate another domain.";
+        if (parsed is not null && parsed.Scheme is not ("https" or "http" or "mailto"))
+            warning += $"\n\nWARNING: unusual scheme '{parsed.Scheme}'.";
+
+        var answer = MessageBox.Show(
+            this,
+            $"Open this link in your browser?\n\nHost: {host}\n\nFull URL:\n{uri}{warning}",
+            "eeeMail - open link",
+            MessageBoxButton.OKCancel,
+            warning.Length > 0 ? MessageBoxImage.Warning : MessageBoxImage.Question);
+        if (answer != MessageBoxResult.OK)
+        {
+            Log(LogLevel.Verbose, $"Link declined: {Truncate(uri, 90)}");
+            return;
+        }
+        try
+        {
+            Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
+            Log($"Opened link externally: {Truncate(uri, 90)}");
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Error, $"Could not open link: {ex.Message}");
+        }
+    }
+
+    // ---- compose -------------------------------------------------------------
+
+    public static readonly RoutedCommand ComposeCommand = new();
+    public static readonly RoutedCommand ReplyCommand = new();
+    public static readonly RoutedCommand ReplyAllCommand = new();
+    public static readonly RoutedCommand ForwardCommand = new();
+
+    void OnComposeNew(object sender, RoutedEventArgs e) => OpenCompose(null);
+    void OnReply(object sender, RoutedEventArgs e) => ReplyToSelected(ReplyKind.Reply);
+    void OnReplyAll(object sender, RoutedEventArgs e) => ReplyToSelected(ReplyKind.ReplyAll);
+    void OnForward(object sender, RoutedEventArgs e) => ReplyToSelected(ReplyKind.Forward);
+
+    void ReplyToSelected(ReplyKind kind)
+    {
+        if (MessageGrid.SelectedItem is not MessageRow row || row.Mailbox is not MailboxHandle mailbox)
+        {
+            StatusText.Text = "Select a message first.";
+            return;
+        }
+        try
+        {
+            var raw = MailboxStore.GetRawMessage(mailbox.Db, row.Id);
+            var original = MimeMessage.Load(new MemoryStream(raw));
+            var draft = ReplyBuilder.BuildReply(original, mailbox.Upn, kind);
+
+            if (kind == ReplyKind.Forward)
+            {
+                // Carry the original's real attachments into the forward.
+                var attachments = new List<DraftAttachment>();
+                foreach (var stored in MailboxStore.GetAttachments(mailbox.Db, row.Id))
+                {
+                    if (stored.IsInline || !stored.HasContent) continue;
+                    var content = MailboxStore.GetAttachmentContent(mailbox.Db, stored.Id);
+                    if (content is null) continue;
+                    attachments.Add(new DraftAttachment(
+                        stored.FileName ?? "attachment",
+                        stored.ContentType ?? "application/octet-stream",
+                        content));
+                }
+                draft = draft with { Attachments = attachments };
+            }
+            OpenCompose(draft);
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Error, $"Could not build {kind}: {ex.Message}");
+            StatusText.Text = $"Could not build {kind}: {ex.Message}";
+        }
+    }
+
+    void OpenCompose(Draft? seed)
+    {
+        if (_mailboxes.Count == 0)
+        {
+            StatusText.Text = "No account configured.";
+            return;
+        }
+        var accounts = _mailboxes.Select(m => m.Upn).ToList();
+        var window = new ComposeWindow(accounts, SendAsync, seed) { Owner = this };
+        window.ShowDialog();
+    }
+
+    /// <summary>
+    /// Sends the exact MIME we built (threading headers included) via Graph's
+    /// raw-MIME sendMail, so the service does not rebuild the headers for us.
+    /// </summary>
+    async Task SendAsync(string fromAddress, MimeMessage message)
+    {
+        var mailbox = _mailboxes.FirstOrDefault(m =>
+            string.Equals(m.Upn, fromAddress, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException($"No account for {fromAddress}.");
+
+        using var buffer = new MemoryStream();
+        message.WriteTo(buffer);
+        var base64 = Convert.ToBase64String(buffer.ToArray());
+
+        // The typed SDK rebuilds the message from its own model, which would
+        // discard our threading headers. Post the raw MIME instead: Graph's
+        // /sendMail accepts base64 MIME with Content-Type text/plain.
+        var token = await GetAccessTokenAsync(mailbox);
+        using var http = new System.Net.Http.HttpClient();
+        using var request = new System.Net.Http.HttpRequestMessage(
+            System.Net.Http.HttpMethod.Post, "https://graph.microsoft.com/v1.0/me/sendMail")
+        {
+            Content = new System.Net.Http.StringContent(
+                base64, System.Text.Encoding.ASCII, "text/plain"),
+        };
+        request.Headers.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        var response = await http.SendAsync(request);
+        if (!response.IsSuccessStatusCode)
+        {
+            var detail = await response.Content.ReadAsStringAsync();
+            throw new InvalidOperationException(
+                $"Graph refused the message ({(int)response.StatusCode}): {Truncate(detail, 300)}");
+        }
+
+        Log($"Sent '{message.Subject}' from {fromAddress} to " +
+            $"{string.Join(", ", message.To.Mailboxes.Select(m => m.Address))}.");
+    }
 
     // ---- search --------------------------------------------------------------
 

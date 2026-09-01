@@ -36,7 +36,14 @@ public static class MailboxDatabase
         return cmd.ExecuteNonQuery();
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4];
+
+    const string V4 = """
+        -- Folder/unread rollups run on every tree refresh; without a covering
+        -- index that is a full scan of a six-figure messages table.
+        CREATE INDEX ix_messages_folder_read ON messages(folder_id, is_read);
+        ANALYZE;
+        """;
 
     const string V3 = """
         ALTER TABLE messages ADD COLUMN importance INTEGER NOT NULL DEFAULT 1;

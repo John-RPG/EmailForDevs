@@ -148,6 +148,18 @@ public sealed class ReplyBuilderTests
     }
 
     [Fact]
+    public void Message_id_uses_the_sender_domain_not_the_machine_name()
+    {
+        var draft = new Draft("bob@example.com", ["alice@example.com"], [], [], "Hi", "Body");
+        var message = ReplyBuilder.ToMimeMessage(draft);
+        // A Message-ID from a nonexistent host (the local machine name) makes
+        // receiving spam filters drop the message silently.
+        Assert.EndsWith("@example.com", message.MessageId);
+        Assert.DoesNotContain(Environment.MachineName.ToLowerInvariant(),
+            message.MessageId.ToLowerInvariant());
+    }
+
+    [Fact]
     public void Address_splitting_handles_commas_semicolons_and_spaces()
     {
         Assert.Equal(

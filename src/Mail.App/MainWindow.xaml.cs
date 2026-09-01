@@ -88,6 +88,7 @@ public partial class MainWindow : Window
     readonly ObservableCollection<LogEntry> _log = [];
     readonly HashSet<LogLevel> _enabledLevels =
         [LogLevel.Verbose, LogLevel.Info, LogLevel.Warning, LogLevel.Error];
+    readonly HashSet<string> _treeRefreshPending = [];
     ICollectionView? _logView;
     System.Windows.Threading.DispatcherTimer? _autoSyncTimer;
     SqliteConnection? _appDb;
@@ -295,9 +296,11 @@ public partial class MainWindow : Window
         long Id, long? ParentId, string Name, string? Special, string? ServerId,
         long ServerTotal, long ServerUnread);
 
-    static List<FolderRow> QueryFolders(MailboxHandle mailbox)
+    static List<FolderRow> QueryFolders(MailboxHandle mailbox) => QueryFolders(mailbox.Db);
+
+    static List<FolderRow> QueryFolders(SqliteConnection db)
     {
-        using var cmd = mailbox.Db.CreateCommand();
+        using var cmd = db.CreateCommand();
         cmd.CommandText = """
             SELECT id, parent_id, name, special_use, server_id, total_count, unread_count FROM folders
             ORDER BY CASE special_use
@@ -319,9 +322,12 @@ public partial class MainWindow : Window
         return rows;
     }
 
-    static Dictionary<long, (long Total, long Unread)> QueryLocalCounts(MailboxHandle mailbox)
+    static Dictionary<long, (long Total, long Unread)> QueryLocalCounts(MailboxHandle mailbox) =>
+        QueryLocalCounts(mailbox.Db);
+
+    static Dictionary<long, (long Total, long Unread)> QueryLocalCounts(SqliteConnection db)
     {
-        using var cmd = mailbox.Db.CreateCommand();
+        using var cmd = db.CreateCommand();
         cmd.CommandText = """
             SELECT folder_id, count(*), coalesce(sum(1 - is_read), 0)
             FROM messages GROUP BY folder_id;
@@ -341,12 +347,39 @@ public partial class MainWindow : Window
         return localUnread > 0 ? $"{row.Name} ({localUnread:N0})" : row.Name;
     }
 
+    /// <summary>
+    /// Refreshes folder headers without blocking the UI: the rollup query runs on
+    /// a worker thread (its own connection, since SqliteConnection is not thread
+    /// safe) and only the header assignment returns to the dispatcher. Overlapping
+    /// requests collapse into one.
+    /// </summary>
     void UpdateTreeCounts(MailboxHandle mailbox)
     {
-        var localCounts = QueryLocalCounts(mailbox);
-        foreach (var row in QueryFolders(mailbox))
-            if (_folderItems.TryGetValue((mailbox.Upn, row.Id), out var item))
-                item.Header = FolderHeader(row, localCounts);
+        if (!_treeRefreshPending.Add(mailbox.Upn))
+            return; // a refresh for this mailbox is already in flight
+        _ = Task.Run(() =>
+        {
+            Dictionary<long, (long Total, long Unread)> counts;
+            List<FolderRow> folders;
+            try
+            {
+                using var db = MailboxDatabase.Open(mailbox.DbPath, mailbox.Dek);
+                counts = QueryLocalCounts(db);
+                folders = QueryFolders(db);
+            }
+            catch
+            {
+                _treeRefreshPending.Remove(mailbox.Upn);
+                return;
+            }
+            Dispatcher.BeginInvoke(() =>
+            {
+                _treeRefreshPending.Remove(mailbox.Upn);
+                foreach (var row in folders)
+                    if (_folderItems.TryGetValue((mailbox.Upn, row.Id), out var item))
+                        item.Header = FolderHeader(row, counts);
+            });
+        });
     }
 
     void OnFolderSelected(object sender, RoutedPropertyChangedEventArgs<object> e)

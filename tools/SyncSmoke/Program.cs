@@ -40,6 +40,97 @@ else
 
 using var appDb = AppDatabase.Open(Path.Combine(profileDir, "app.db"), masterKey);
 
+if (args.Contains("probe", StringComparer.OrdinalIgnoreCase))
+{
+    // Asks Graph directly (bypassing our sync) where the test messages are,
+    // so we can tell a delivery problem from a sync problem.
+    var probeAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    var probeAccounts = await probeAuth.GetAccountsAsync();
+    foreach (var acct in probeAccounts)
+    {
+        var tok = await probeAuth.AcquireSilentAsync(acct);
+        if (tok is null) { Console.WriteLine($"{acct.Username}: needs interactive sign-in"); continue; }
+        var g = new GraphServiceClient(
+            new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(probeAuth, tok)));
+        Console.WriteLine($"--- {acct.Username} ---");
+        try
+        {
+            var found = await g.Me.Messages.GetAsync(rc =>
+            {
+                rc.QueryParameters.Search = "\"eeeMail\"";
+                rc.QueryParameters.Select = ["subject", "receivedDateTime", "parentFolderId", "isDraft"];
+                rc.QueryParameters.Top = 10;
+            });
+            if (found?.Value is null || found.Value.Count == 0)
+                Console.WriteLine("  (no matching messages on the server)");
+            foreach (var msg in found?.Value ?? [])
+            {
+                var folderName = msg.ParentFolderId;
+                try
+                {
+                    var f = await g.Me.MailFolders[msg.ParentFolderId].GetAsync();
+                    folderName = f?.DisplayName ?? msg.ParentFolderId;
+                }
+                catch { }
+                Console.WriteLine($"  [{folderName}] {msg.ReceivedDateTime:u}  {msg.Subject}  draft={msg.IsDraft}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  probe failed: {ex.Message}");
+        }
+    }
+    return;
+}
+
+if (args.Contains("timing", StringComparer.OrdinalIgnoreCase))
+{
+    // Reproduces the app's startup work with timings, against the real DBs.
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    using var list = appDb.CreateCommand();
+    list.CommandText = "SELECT upn, db_path, dek FROM mailboxes WHERE enabled = 1 ORDER BY id;";
+    var boxes = new List<(string Upn, string Path, byte[] Dek)>();
+    using (var rows3 = list.ExecuteReader())
+        while (rows3.Read())
+            boxes.Add((rows3.GetString(0), Path.GetFullPath(rows3.GetString(1)), (byte[])rows3.GetValue(2)));
+    Console.WriteLine($"registry read            : {sw.ElapsedMilliseconds,6:N0} ms");
+
+    foreach (var box in boxes)
+    {
+        sw.Restart();
+        using var db = MailboxDatabase.Open(box.Path, box.Dek);
+        Console.WriteLine($"{box.Upn}");
+        Console.WriteLine($"  open + migrate         : {sw.ElapsedMilliseconds,6:N0} ms");
+
+        sw.Restart();
+        using (var c = db.CreateCommand())
+        {
+            c.CommandText = "SELECT id, parent_id, name, special_use, server_id, total_count, unread_count FROM folders;";
+            using var r = c.ExecuteReader();
+            var n = 0; while (r.Read()) n++;
+            Console.WriteLine($"  folders query ({n,3})    : {sw.ElapsedMilliseconds,6:N0} ms");
+        }
+
+        sw.Restart();
+        using (var c = db.CreateCommand())
+        {
+            c.CommandText = "SELECT folder_id, count(*), coalesce(sum(1 - is_read), 0) FROM messages GROUP BY folder_id;";
+            using var r = c.ExecuteReader();
+            while (r.Read()) { }
+            Console.WriteLine($"  local counts (GROUP BY): {sw.ElapsedMilliseconds,6:N0} ms   <-- per tree refresh");
+        }
+
+        sw.Restart();
+        using (var c = db.CreateCommand())
+        {
+            c.CommandText = "SELECT count(*) FROM messages;";
+            c.ExecuteScalar();
+            Console.WriteLine($"  count(*) messages      : {sw.ElapsedMilliseconds,6:N0} ms");
+        }
+    }
+    return;
+}
+
 if (args.Contains("stats", StringComparer.OrdinalIgnoreCase))
 {
     using var list = appDb.CreateCommand();
@@ -75,6 +166,107 @@ Console.WriteLine($"Signed in as {upn}");
 // --- mailbox registry row + DEK ----------------------------------------------
 var dek = EnsureMailboxRegistered(appDb, upn, out var mailboxDbPath);
 using var mailboxDb = MailboxDatabase.Open(mailboxDbPath, dek);
+
+if (args.Contains("findrecent", StringComparer.OrdinalIgnoreCase))
+{
+    using var find = mailboxDb.CreateCommand();
+    find.CommandText = """
+        SELECT m.id, m.subject, m.internet_message_id,
+               datetime(m.received_at, 'unixepoch', 'localtime'), f.name
+        FROM messages m JOIN folders f ON f.id = m.folder_id
+        WHERE m.subject LIKE '%eeeMail send test%' OR m.subject LIKE '%eeeMail reply test%'
+        ORDER BY m.received_at DESC LIMIT 10;
+        """;
+    using var rows2 = find.ExecuteReader();
+    var any = false;
+    while (rows2.Read())
+    {
+        any = true;
+        Console.WriteLine($"  [{rows2.GetString(4)}] {rows2.GetString(3)}  {rows2.GetString(1)}");
+        Console.WriteLine($"      message-id: {(rows2.IsDBNull(2) ? "(none)" : rows2.GetString(2))}  local id: {rows2.GetInt64(0)}");
+    }
+    if (!any) Console.WriteLine("  (no test messages found in this mailbox yet)");
+    return;
+}
+
+if (args.Contains("sendtest", StringComparer.OrdinalIgnoreCase))
+{
+    // Sends a threaded pair between the two configured accounts using the same
+    // ReplyBuilder + raw-MIME path the UI uses, so problems surface here first.
+    var recipient = args.SkipWhile(a => !a.Equals("sendtest", StringComparison.OrdinalIgnoreCase))
+        .Skip(1).FirstOrDefault();
+    if (recipient is null)
+    {
+        Console.WriteLine("Usage: sendtest <recipient-address>");
+        return;
+    }
+    var stamp = DateTime.Now.ToString("HH:mm:ss");
+    var draft = new Mail.Core.Compose.Draft(
+        From: upn,
+        To: [recipient],
+        Cc: [],
+        Bcc: [],
+        Subject: $"eeeMail send test {stamp}",
+        Body: $"Sent by eeeMail at {stamp}.\n\nThis exercises the raw-MIME send path.");
+    var outgoing = Mail.Core.Compose.ReplyBuilder.ToMimeMessage(draft);
+
+    using var outBuffer = new MemoryStream();
+    outgoing.WriteTo(outBuffer);
+    Console.WriteLine("--- outgoing MIME (headers) ---");
+    var text = System.Text.Encoding.ASCII.GetString(outBuffer.ToArray());
+    foreach (var line in text.Split('\n').TakeWhile(l => l.Trim().Length > 0))
+        Console.WriteLine("  " + line.TrimEnd());
+
+    var base64 = Convert.ToBase64String(outBuffer.ToArray());
+    using var http = new HttpClient();
+    using var request = new HttpRequestMessage(HttpMethod.Post, "https://graph.microsoft.com/v1.0/me/sendMail")
+    {
+        Content = new StringContent(base64, System.Text.Encoding.ASCII, "text/plain"),
+    };
+    request.Headers.Authorization =
+        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", signIn.AccessToken);
+    var response = await http.SendAsync(request);
+    Console.WriteLine();
+    Console.WriteLine($"Graph responded: {(int)response.StatusCode} {response.StatusCode}");
+    if (!response.IsSuccessStatusCode)
+        Console.WriteLine(await response.Content.ReadAsStringAsync());
+    else
+        Console.WriteLine($"Sent from {upn} to {recipient} with Message-ID {outgoing.MessageId}");
+    return;
+}
+
+if (args.Contains("sendtyped", StringComparer.OrdinalIgnoreCase))
+{
+    // Control test: send via the typed Graph API (service builds the MIME).
+    // If this arrives and raw MIME does not, the problem is our MIME, not delivery.
+    var recip = args.SkipWhile(a => !a.Equals("sendtyped", StringComparison.OrdinalIgnoreCase))
+        .Skip(1).FirstOrDefault() ?? "";
+    var g2 = new GraphServiceClient(
+        new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, signIn)));
+    var stamp2 = DateTime.Now.ToString("HH:mm:ss");
+    await g2.Me.SendMail.PostAsync(new Microsoft.Graph.Me.SendMail.SendMailPostRequestBody
+    {
+        Message = new Microsoft.Graph.Models.Message
+        {
+            Subject = $"eeeMail typed test {stamp2}",
+            Body = new Microsoft.Graph.Models.ItemBody
+            {
+                ContentType = Microsoft.Graph.Models.BodyType.Text,
+                Content = $"Typed-API control message sent at {stamp2}.",
+            },
+            ToRecipients =
+            [
+                new Microsoft.Graph.Models.Recipient
+                {
+                    EmailAddress = new Microsoft.Graph.Models.EmailAddress { Address = recip },
+                },
+            ],
+        },
+        SaveToSentItems = true,
+    });
+    Console.WriteLine($"Typed send accepted: {upn} -> {recip} (subject: eeeMail typed test {stamp2})");
+    return;
+}
 
 if (args.Contains("bench", StringComparer.OrdinalIgnoreCase))
 {

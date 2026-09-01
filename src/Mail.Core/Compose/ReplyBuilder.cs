@@ -140,7 +140,14 @@ public static class ReplyBuilder
         AddAll(message.Bcc, draft.Bcc);
         message.Subject = draft.Subject ?? "";
         message.Date = DateTimeOffset.Now;
-        message.MessageId = MimeKit.Utils.MimeUtils.GenerateMessageId();
+        // Derive the Message-ID from the sender's own domain. MimeKit defaults to
+        // the local machine name (…@johnspc), and a message claiming to be from
+        // @hotmail.com while carrying a Message-ID from a nonexistent host looks
+        // like a forgery to receiving spam filters — which silently drop it.
+        var domain = draft.From.Contains('@')
+            ? draft.From[(draft.From.IndexOf('@') + 1)..].Trim()
+            : "localhost";
+        message.MessageId = MimeKit.Utils.MimeUtils.GenerateMessageId(domain);
 
         if (!string.IsNullOrEmpty(draft.InReplyTo))
             message.InReplyTo = draft.InReplyTo;

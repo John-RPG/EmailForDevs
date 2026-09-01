@@ -75,33 +75,49 @@
                 </StackPanel>
 
                 <TreeView x:Name="FolderTree" Grid.Row="1"
-                          SelectedItemChanged="OnFolderSelected" BorderThickness="0,1,0,0">
-                    <TreeView.ItemContainerStyle>
+                          SelectedItemChanged="OnFolderSelected" BorderThickness="0,1,0,0"
+                          HorizontalContentAlignment="Stretch"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <TreeView.Resources>
+                        <!-- Rows must fill the tree width or the right-aligned count
+                             column has nothing to align against. -->
                         <Style TargetType="TreeViewItem">
                             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
                             <Setter Property="Visibility" Value="{Binding Visibility}"/>
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                            <Setter Property="VerticalContentAlignment" Value="Center"/>
+                            <Setter Property="Padding" Value="1,1"/>
                         </Style>
-                    </TreeView.ItemContainerStyle>
+                    </TreeView.Resources>
                     <TreeView.ItemTemplate>
                         <HierarchicalDataTemplate ItemsSource="{Binding Children}">
-                            <Grid Width="{Binding RowWidth}">
+                            <Grid HorizontalAlignment="Stretch" Background="Transparent"
+                                  ToolTip="{Binding Tooltip}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Grid.Column="0" Text="{Binding Icon}" Margin="0,0,4,0"/>
+                                <TextBlock Grid.Column="0" Text="{Binding Icon}" Margin="0,0,5,0"
+                                           VerticalAlignment="Center"/>
                                 <TextBlock Grid.Column="1" Text="{Binding Name}"
                                            TextTrimming="CharacterEllipsis"
+                                           VerticalAlignment="Center"
                                            FontWeight="{Binding Weight}"/>
                                 <TextBlock Grid.Column="2" Text="{Binding Counts}"
                                            Foreground="{Binding CountBrush}"
                                            FontWeight="{Binding Weight}"
-                                           TextAlignment="Right" Margin="6,0,4,0"/>
+                                           VerticalAlignment="Center"
+                                           TextAlignment="Right" Margin="8,0,4,0"/>
                                 <Grid.ContextMenu>
                                     <ContextMenu>
                                         <MenuItem Header="Add to favourites" Click="OnAddFavourite"/>
                                         <MenuItem Header="Remove from favourites" Click="OnRemoveFavourite"/>
+                                        <Separator/>
+                                        <MenuItem Header="Expand all" Click="OnExpandAll"/>
+                                        <MenuItem Header="Collapse all" Click="OnCollapseAll"/>
                                     </ContextMenu>
                                 </Grid.ContextMenu>
                             </Grid>

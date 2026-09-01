@@ -72,6 +72,24 @@ public sealed class FolderNodeViewModel : INotifyPropertyChanged
 
     public Brush CountBrush => HasUnread ? Brushes.Black : Brushes.Gray;
 
+    /// <summary>Spells out what the count column is showing, since a bare
+    /// "1,203/26,921" is meaningless without context.</summary>
+    public string Tooltip
+    {
+        get
+        {
+            if (IsGroupHeader || Mailbox is null) return Name;
+            var parts = new List<string> { Name };
+            if (Counts.Contains('/'))
+                parts.Add("synced/total, then unread local/server");
+            else if (Counts.Length > 0)
+                parts.Add($"{Counts} unread");
+            if (LastActivity is { } last)
+                parts.Add($"newest: {last.ToLocalTime():yyyy-MM-dd HH:mm}");
+            return string.Join("\n", parts);
+        }
+    }
+
     public string Icon => IsGroupHeader
         ? "★"                               // star: favourites group
         : Mailbox is null

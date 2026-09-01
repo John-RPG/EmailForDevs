@@ -437,10 +437,22 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Resolves the node a context menu was opened on. A ContextMenu lives
+    /// outside the visual tree, so its DataContext is the row that was
+    /// right-clicked, which is not necessarily the selected one.
+    /// </summary>
+    static FolderNodeViewModel? NodeFor(object sender) => sender switch
+    {
+        MenuItem { DataContext: FolderNodeViewModel node } => node,
+        FrameworkElement { DataContext: FolderNodeViewModel node } => node,
+        _ => null,
+    };
+
     void OnAddFavourite(object sender, RoutedEventArgs e)
     {
-        if (FolderTree.SelectedItem is not FolderNodeViewModel node ||
-            node.Mailbox is not MailboxHandle mailbox || node.IsGroupHeader)
+        var node = NodeFor(sender) ?? FolderTree.SelectedItem as FolderNodeViewModel;
+        if (node is null || node.Mailbox is not MailboxHandle mailbox || node.IsGroupHeader)
             return;
         if (!_favourites.TryGetValue(mailbox.Upn, out var list))
             _favourites[mailbox.Upn] = list = [];
@@ -455,8 +467,8 @@ public partial class MainWindow : Window
 
     void OnRemoveFavourite(object sender, RoutedEventArgs e)
     {
-        if (FolderTree.SelectedItem is not FolderNodeViewModel node ||
-            node.Mailbox is not MailboxHandle mailbox)
+        var node = NodeFor(sender) ?? FolderTree.SelectedItem as FolderNodeViewModel;
+        if (node is null || node.Mailbox is not MailboxHandle mailbox)
             return;
         if (_favourites.TryGetValue(mailbox.Upn, out var list) && list.Remove(node.FolderId))
         {

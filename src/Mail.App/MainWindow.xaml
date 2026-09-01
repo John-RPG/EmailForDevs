@@ -26,6 +26,9 @@
                         <Bold>Dates</Bold>  after: before: on:  — 2026-08-31, 2026-08, today, 7d, 3m<LineBreak/>
                         <Bold>Size</Bold>  larger:2mb smaller:500kb<LineBreak/>
                         <Bold>Logic</Bold>  AND (implicit), OR, NOT or -, ( ), "quoted phrases"<LineBreak/>
+                        <Bold>Wildcards</Bold>  * and ? in field values (anchored: from:*@corp.com,<LineBreak/>
+                        filename:*.pdf, subject:*report*); trailing * on bare words (invoic*).<LineBreak/>
+                        Escape with a backslash for literals: \* \? \\<LineBreak/>
                         <LineBreak/>
                         Example: from:alice has:attachment after:3m -subject:"weekly report"
                     </TextBlock>

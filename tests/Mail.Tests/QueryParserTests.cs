@@ -132,6 +132,53 @@ public sealed class QueryParserTests : IDisposable
     }
 
     [Fact]
+    public void Wildcards_in_field_terms()
+    {
+        // Anchored glob: domain and suffix matching.
+        Assert.Equal([3L], Run("from:*@big.example"));
+        Assert.Equal([1L, 2L], Run("from:*@example.com"));
+        Assert.Equal([3L], Run("filename:*.pdf"));
+        Assert.Equal([1L, 3L], Run("subject:Invoice*"));
+        // ? matches exactly one character.
+        Assert.Equal([1L, 2L], Run("from:?ob@example.com OR from:alic?@example.com"));
+        // Without wildcards, substring behaviour is unchanged.
+        Assert.Equal([1L], Run("from:alice"));
+    }
+
+    [Fact]
+    public void Escaped_wildcards_are_literal()
+    {
+        Exec("""
+            INSERT INTO messages(id, folder_id, subject, received_at, size, is_read) VALUES
+                (4, 1, 'Sale 5*3 offer', 1800000000, 900, 1),
+                (5, 1, 'Sale 5x3 offer', 1800000000, 900, 1);
+            """);
+        // Wildcard patterns are anchored, so a leading * is needed to match mid-subject.
+        Assert.Equal([4L, 5L], Run("subject:*5*3*"));
+        // Escaped: the asterisk between 5 and 3 is literal, so only row 4 matches.
+        Assert.Equal([4L], Run(@"subject:*5\*3*"));
+        // Escaping also works in the plain (non-wildcard, substring) path.
+        Assert.Equal([4L], Run(@"subject:5\*3"));
+
+        // A doubled backslash is a literal backslash.
+        Exec("""
+            INSERT INTO messages(id, folder_id, subject, received_at, size, is_read) VALUES
+                (6, 1, 'Path C:\temp\notes', 1800000000, 900, 1);
+            """);
+        Assert.Equal([6L], Run(@"subject:C:\\temp"));
+        Assert.Equal([6L], Run(@"subject:*C:\\temp*"));
+        // LIKE metacharacters in user input stay literal too.
+        Assert.Empty(Run("subject:%"));
+    }
+
+    [Fact]
+    public void Fts_prefix_matching()
+    {
+        Assert.Equal([1L, 3L], Run("invoic*"));
+        Assert.Equal([2L], Run("lunc*"));
+    }
+
+    [Fact]
     public void Unknown_fields_and_bad_values_are_errors()
     {
         Assert.Throws<QueryParseException>(() => QueryParser.Parse("banana:split"));

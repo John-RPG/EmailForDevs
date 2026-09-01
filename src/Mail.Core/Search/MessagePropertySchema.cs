@@ -14,6 +14,8 @@ public enum ConditionOperator
 {
     Equals, NotEquals,
     Contains, NotContains, StartsWith, EndsWith,
+    /// <summary>Glob match where * and ? are wildcards; anchored unless the pattern says otherwise.</summary>
+    Matches,
     GreaterThan, GreaterOrEqual, LessThan, LessOrEqual, Between,
     In, IsEmpty, NotEmpty,
 }
@@ -44,15 +46,17 @@ public static class MessagePropertySchema
         PropertyKind.Address =>
             [ConditionOperator.Equals, ConditionOperator.NotEquals, ConditionOperator.Contains,
              ConditionOperator.NotContains, ConditionOperator.StartsWith, ConditionOperator.EndsWith,
-             ConditionOperator.In],
+             ConditionOperator.Matches, ConditionOperator.In],
         PropertyKind.Text =>
             [ConditionOperator.Equals, ConditionOperator.NotEquals, ConditionOperator.Contains,
              ConditionOperator.NotContains, ConditionOperator.StartsWith, ConditionOperator.EndsWith,
-             ConditionOperator.In, ConditionOperator.IsEmpty, ConditionOperator.NotEmpty],
+             ConditionOperator.Matches, ConditionOperator.In,
+             ConditionOperator.IsEmpty, ConditionOperator.NotEmpty],
         PropertyKind.FullText =>
             [ConditionOperator.Contains, ConditionOperator.NotContains],
         PropertyKind.Folder =>
-            [ConditionOperator.Equals, ConditionOperator.NotEquals, ConditionOperator.In],
+            [ConditionOperator.Equals, ConditionOperator.NotEquals,
+             ConditionOperator.Matches, ConditionOperator.In],
         PropertyKind.Date or PropertyKind.Number =>
             [ConditionOperator.Equals, ConditionOperator.NotEquals, ConditionOperator.GreaterThan,
              ConditionOperator.GreaterOrEqual, ConditionOperator.LessThan, ConditionOperator.LessOrEqual,

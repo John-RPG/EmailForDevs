@@ -194,11 +194,12 @@ public static class QueryParser
             "bcc" => Address(MessageProperty.Bcc, value),
             "recipient" => Address(MessageProperty.AnyRecipient, value),
             "participant" or "involves" => Address(MessageProperty.Participant, value),
-            "subject" => QueryNode.Where(MessageProperty.Subject, ConditionOperator.Contains, value),
+            "subject" => Text(MessageProperty.Subject, value),
             "body" => QueryNode.Where(MessageProperty.Body, ConditionOperator.Contains, value),
-            "folder" or "in" => QueryNode.Where(MessageProperty.Folder, ConditionOperator.Equals, value),
-            "filename" or "attachment" =>
-                QueryNode.Where(MessageProperty.AttachmentName, ConditionOperator.Contains, value),
+            "folder" or "in" => HasWildcard(value)
+                ? QueryNode.Where(MessageProperty.Folder, ConditionOperator.Matches, value)
+                : QueryNode.Where(MessageProperty.Folder, ConditionOperator.Equals, value),
+            "filename" or "attachment" => Text(MessageProperty.AttachmentName, value),
             "has" => Has(value, token.Start),
             "is" => Is(value, token.Start),
             "after" or "since" =>
@@ -214,8 +215,43 @@ public static class QueryParser
         };
     }
 
+    /// <summary>True when the value has an unescaped wildcard (\* and \? are literals).</summary>
+    static bool HasWildcard(string value)
+    {
+        for (var i = 0; i < value.Length; i++)
+        {
+            if (value[i] == '\\') { i++; continue; }
+            if (value[i] is '*' or '?') return true;
+        }
+        return false;
+    }
+
+    /// <summary>Strips escape backslashes for the non-wildcard path: `a\*b` searches for `a*b`.</summary>
+    static string Unescape(string value)
+    {
+        if (!value.Contains('\\')) return value;
+        var sb = new System.Text.StringBuilder(value.Length);
+        for (var i = 0; i < value.Length; i++)
+        {
+            if (value[i] == '\\' && i + 1 < value.Length) i++;
+            sb.Append(value[i]);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Wildcarded values match as anchored globs; plain values keep the
+    /// friendlier substring behaviour (from:alice finds alice@example.com).
+    /// </summary>
     static QueryNode Address(MessageProperty property, string value) =>
-        QueryNode.Where(property, ConditionOperator.Contains, value);
+        HasWildcard(value)
+            ? QueryNode.Where(property, ConditionOperator.Matches, value)
+            : QueryNode.Where(property, ConditionOperator.Contains, Unescape(value));
+
+    static QueryNode Text(MessageProperty property, string value) =>
+        HasWildcard(value)
+            ? QueryNode.Where(property, ConditionOperator.Matches, value)
+            : QueryNode.Where(property, ConditionOperator.Contains, Unescape(value));
 
     static QueryNode Has(string value, int position) => value.ToLowerInvariant() switch
     {

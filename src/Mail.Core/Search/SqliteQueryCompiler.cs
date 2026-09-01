@@ -102,6 +102,7 @@ public static class SqliteQueryCompiler
             ConditionOperator.NotContains => $"({col} IS NULL OR NOT {Like(col, "%" + EscapeLike(Str(c.Values[0])) + "%")})",
             ConditionOperator.StartsWith => Like(col, EscapeLike(Str(c.Values[0])) + "%"),
             ConditionOperator.EndsWith => Like(col, "%" + EscapeLike(Str(c.Values[0]))),
+            ConditionOperator.Matches => Like(col, GlobToLike(Str(c.Values[0]))),
             ConditionOperator.In =>
                 $"{col} COLLATE NOCASE IN ({string.Join(", ", c.Values.Select(v => AddParam(Str(v))))})",
             ConditionOperator.IsEmpty => $"({col} IS NULL OR {col} = '')",
@@ -113,6 +114,33 @@ public static class SqliteQueryCompiler
 
         static string EscapeLike(string s) =>
             s.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
+
+        /// <summary>
+        /// Glob (* ?) to LIKE (% _), escaping everything else. The pattern is
+        /// anchored at both ends, so `*@example.com` means "ends with"; wrap in
+        /// stars for a contains-style match. A backslash escapes the next
+        /// character, so `a\*b` matches a literal asterisk.
+        /// </summary>
+        static string GlobToLike(string glob)
+        {
+            var sb = new StringBuilder(glob.Length + 4);
+            for (var i = 0; i < glob.Length; i++)
+            {
+                var c = glob[i];
+                if (c == '\\' && i + 1 < glob.Length)
+                {
+                    sb.Append(EscapeLike(glob[++i].ToString()));
+                    continue;
+                }
+                sb.Append(c switch
+                {
+                    '*' => "%",
+                    '?' => "_",
+                    _ => EscapeLike(c.ToString()),
+                });
+            }
+            return sb.ToString();
+        }
 
         static string Str(object? v) => v as string
             ?? throw new QueryCompilationException("Expected a string value.");
@@ -192,6 +220,8 @@ public static class SqliteQueryCompiler
                 ConditionOperator.NotContains => (ConditionOperator.Contains, true),
                 var op => (op, false),
             };
+            // Address matching is an EXISTS over recipients, so the "positive" form
+            // is built first and negated as a whole below.
             var kinds = string.Join(", ", AddressKinds(c.Property));
             string match = positiveOp switch
             {
@@ -205,6 +235,9 @@ public static class SqliteQueryCompiler
                 ConditionOperator.EndsWith =>
                     Or2(Like("a.email", "%" + EscapeLike(Str(c.Values[0]))),
                         Like("a.display_name", "%" + EscapeLike(Str(c.Values[0])))),
+                ConditionOperator.Matches =>
+                    Or2(Like("a.email", GlobToLike(Str(c.Values[0]))),
+                        Like("a.display_name", GlobToLike(Str(c.Values[0])))),
                 ConditionOperator.In =>
                     $"a.email COLLATE NOCASE IN ({string.Join(", ", c.Values.Select(v => AddParam(Str(v))))})",
                 _ => throw new QueryCompilationException($"Unsupported address operator {c.Operator}."),
@@ -229,7 +262,13 @@ public static class SqliteQueryCompiler
             {
                 if (i > 0) sb.Append(" AND ");
                 if (column is not null) sb.Append(column).Append(": ");
-                sb.Append('"').Append(tokens[i].Replace("\"", "\"\"")).Append('"');
+                // FTS5 supports trailing-* prefix matching only; the star must sit
+                // outside the quotes. Any other wildcard is matched literally.
+                var token = tokens[i];
+                var prefix = token.Length > 1 && token[^1] == '*';
+                if (prefix) token = token[..^1];
+                sb.Append('"').Append(token.Replace("\"", "\"\"")).Append('"');
+                if (prefix) sb.Append('*');
             }
             var inClause = $"m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH {AddParam(sb.ToString())})";
             return negate ? "NOT " + inClause : inClause;

@@ -83,7 +83,9 @@ public partial class MainWindow : Window
     }
 
     readonly List<MailboxHandle> _mailboxes = [];
-    readonly Dictionary<(string Upn, long FolderId), TreeViewItem> _folderItems = [];
+    readonly Dictionary<(string Upn, long FolderId), FolderNodeViewModel> _folderNodes = [];
+    readonly Dictionary<(string Upn, long FolderId), FolderNodeViewModel> _favouriteNodes = [];
+    Dictionary<string, List<long>> _favourites = [];
     readonly Dictionary<string, GraphServiceClient> _graphClients = [];
     readonly ObservableCollection<LogEntry> _log = [];
     readonly HashSet<LogLevel> _enabledLevels =
@@ -183,6 +185,7 @@ public partial class MainWindow : Window
                     upn, dbPath, dek, reader.GetInt32(3), reader.GetString(4),
                     MailboxDatabase.Open(dbPath, dek)));
             }
+            LoadFavourites();
             BuildTree();
             StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
             Log($"Profile opened: {_mailboxes.Count} mailbox(es).");
@@ -256,40 +259,262 @@ public partial class MainWindow : Window
     void BuildTree()
     {
         FolderTree.Items.Clear();
-        _folderItems.Clear();
-        TreeViewItem? inboxItem = null;
+        _folderNodes.Clear();
+        FolderNodeViewModel? inboxNode = null;
+
         foreach (var mailbox in _mailboxes)
         {
-            var root = new TreeViewItem
+            var root = new FolderNodeViewModel
             {
-                Header = $"{mailbox.Upn}  [{mailbox.ScopeText}]",
+                Name = $"{mailbox.Upn}  [{mailbox.ScopeText}]",
                 IsExpanded = true,
             };
+
             var rows = QueryFolders(mailbox);
             var localCounts = QueryLocalCounts(mailbox);
-            var items = new Dictionary<long, TreeViewItem>();
+            var activity = QueryFolderActivity(mailbox);
+            var nodes = new Dictionary<long, FolderNodeViewModel>();
+
             foreach (var row in rows)
             {
-                var item = new TreeViewItem
+                var node = new FolderNodeViewModel
                 {
-                    Header = FolderHeader(row, localCounts),
-                    Tag = new FolderNode(mailbox, row.Id, row.Name),
+                    Mailbox = mailbox,
+                    FolderId = row.Id,
+                    ServerId = row.ServerId,
+                    SpecialUse = row.Special,
+                    Name = row.Name,
+                    IsExpanded = true,
+                    LastActivity = activity.GetValueOrDefault(row.Id),
                 };
-                items[row.Id] = item;
-                _folderItems[(mailbox.Upn, row.Id)] = item;
+                ApplyCounts(node, row, localCounts);
+                nodes[row.Id] = node;
+                _folderNodes[(mailbox.Upn, row.Id)] = node;
                 if (row.Special == "inbox")
-                    inboxItem ??= item;
+                    inboxNode ??= node;
             }
+
+            // Favourites first, as a group of shortcuts to real folders.
+            var favourites = new FolderNodeViewModel
+            {
+                Name = "Favourites",
+                IsGroupHeader = true,
+                IsExpanded = true,
+            };
+            foreach (var favouriteId in FavouritesFor(mailbox.Upn))
+            {
+                if (!nodes.TryGetValue(favouriteId, out var source)) continue;
+                var shortcut = new FolderNodeViewModel
+                {
+                    Mailbox = mailbox,
+                    FolderId = source.FolderId,
+                    ServerId = source.ServerId,
+                    SpecialUse = source.SpecialUse,
+                    Name = source.Name,
+                    Counts = source.Counts,
+                    HasUnread = source.HasUnread,
+                    IsFavouriteEntry = true,
+                    LastActivity = source.LastActivity,
+                };
+                favourites.Children.Add(shortcut);
+                _favouriteNodes[(mailbox.Upn, source.FolderId)] = shortcut;
+            }
+            if (favourites.Children.Count > 0)
+                root.Children.Add(favourites);
+
             foreach (var row in rows)
             {
-                var parent = row.ParentId is long p && items.TryGetValue(p, out var pi)
-                    ? (ItemsControl)pi : root;
-                parent.Items.Add(items[row.Id]);
+                var parent = row.ParentId is long p && nodes.TryGetValue(p, out var pn)
+                    ? pn.Children
+                    : root.Children;
+                parent.Add(nodes[row.Id]);
             }
             FolderTree.Items.Add(root);
         }
-        if (inboxItem is not null)
-            inboxItem.IsSelected = true;
+
+        ApplyQuietFilter();
+        if (inboxNode is not null)
+            SelectNode(inboxNode);
+    }
+
+    static void ApplyCounts(
+        FolderNodeViewModel node, FolderRow row,
+        Dictionary<long, (long Total, long Unread)> local)
+    {
+        var (localTotal, localUnread) = local.GetValueOrDefault(row.Id);
+        node.HasUnread = localUnread > 0;
+        node.Counts = localTotal < row.ServerTotal
+            ? $"{localTotal:N0}/{row.ServerTotal:N0}" +
+              (row.ServerUnread > 0 ? $"  {localUnread:N0}/{row.ServerUnread:N0}" : "")
+            : localUnread > 0 ? $"{localUnread:N0}" : "";
+    }
+
+    /// <summary>Newest received_at per folder, for the quiet-folder filter.</summary>
+    static Dictionary<long, DateTimeOffset> QueryFolderActivity(MailboxHandle mailbox) =>
+        QueryFolderActivity(mailbox.Db);
+
+    static Dictionary<long, DateTimeOffset> QueryFolderActivity(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT folder_id, max(received_at) FROM messages GROUP BY folder_id;";
+        var map = new Dictionary<long, DateTimeOffset>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            if (!reader.IsDBNull(1))
+                map[reader.GetInt64(0)] = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(1));
+        return map;
+    }
+
+    void SelectNode(FolderNodeViewModel node)
+    {
+        // TreeView selection is container-driven; realise the containers first.
+        FolderTree.UpdateLayout();
+        if (FindContainer(FolderTree, node) is TreeViewItem container)
+        {
+            container.IsSelected = true;
+            container.BringIntoView();
+        }
+        else if (node.Mailbox is MailboxHandle mailbox)
+        {
+            LoadFolder(new FolderNode(mailbox, node.FolderId, node.Name));
+        }
+    }
+
+    static TreeViewItem? FindContainer(ItemsControl parent, object item)
+    {
+        if (parent.ItemContainerGenerator.ContainerFromItem(item) is TreeViewItem match)
+            return match;
+        foreach (var child in parent.Items)
+        {
+            if (parent.ItemContainerGenerator.ContainerFromItem(child) is not TreeViewItem container)
+                continue;
+            container.UpdateLayout();
+            if (FindContainer(container, item) is TreeViewItem nested)
+                return nested;
+        }
+        return null;
+    }
+
+    // ---- favourites and filtering -------------------------------------------
+
+    List<long> FavouritesFor(string upn) =>
+        _favourites.TryGetValue(upn, out var list) ? list : [];
+
+    void LoadFavourites()
+    {
+        _favourites.Clear();
+        if (_appDb is null) return;
+        try
+        {
+            using var cmd = _appDb.CreateCommand();
+            cmd.CommandText = "SELECT value FROM ui_state WHERE key = 'favourites';";
+            if (cmd.ExecuteScalar() is string json && json.Length > 0)
+                _favourites = System.Text.Json.JsonSerializer
+                    .Deserialize<Dictionary<string, List<long>>>(json) ?? [];
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Debug, $"Could not read favourites: {ex.Message}");
+        }
+    }
+
+    void SaveFavourites()
+    {
+        if (_appDb is null) return;
+        try
+        {
+            using var cmd = _appDb.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO ui_state(key, value) VALUES('favourites', @v)
+                ON CONFLICT(key) DO UPDATE SET value = @v;
+                """;
+            cmd.Parameters.AddWithValue("@v", System.Text.Json.JsonSerializer.Serialize(_favourites));
+            cmd.ExecuteNonQuery();
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Warning, $"Could not save favourites: {ex.Message}");
+        }
+    }
+
+    void OnAddFavourite(object sender, RoutedEventArgs e)
+    {
+        if (FolderTree.SelectedItem is not FolderNodeViewModel node ||
+            node.Mailbox is not MailboxHandle mailbox || node.IsGroupHeader)
+            return;
+        if (!_favourites.TryGetValue(mailbox.Upn, out var list))
+            _favourites[mailbox.Upn] = list = [];
+        if (!list.Contains(node.FolderId))
+        {
+            list.Add(node.FolderId);
+            SaveFavourites();
+            BuildTree();
+            Log($"Added {node.Name} to favourites.");
+        }
+    }
+
+    void OnRemoveFavourite(object sender, RoutedEventArgs e)
+    {
+        if (FolderTree.SelectedItem is not FolderNodeViewModel node ||
+            node.Mailbox is not MailboxHandle mailbox)
+            return;
+        if (_favourites.TryGetValue(mailbox.Upn, out var list) && list.Remove(node.FolderId))
+        {
+            SaveFavourites();
+            BuildTree();
+            Log($"Removed {node.Name} from favourites.");
+        }
+    }
+
+    void OnHideQuietChanged(object sender, RoutedEventArgs e) => ApplyQuietFilter();
+
+    /// <summary>
+    /// Hides folders with nothing received in the last month. Folders with
+    /// unread mail, favourites, special-use folders and any ancestor of a
+    /// visible folder always stay: hiding those would lose mail, not noise.
+    /// </summary>
+    void ApplyQuietFilter()
+    {
+        var hide = HideQuietToggle.IsChecked == true;
+        var cutoff = DateTimeOffset.UtcNow.AddMonths(-1);
+        foreach (var item in FolderTree.Items.OfType<FolderNodeViewModel>())
+            ApplyQuietFilter(item, hide, cutoff);
+    }
+
+    static bool ApplyQuietFilter(FolderNodeViewModel node, bool hide, DateTimeOffset cutoff)
+    {
+        var anyChildVisible = false;
+        foreach (var child in node.Children)
+            anyChildVisible |= ApplyQuietFilter(child, hide, cutoff);
+
+        var keep =
+            !hide ||
+            node.IsGroupHeader ||
+            node.Mailbox is null ||
+            node.IsFavouriteEntry ||
+            node.HasUnread ||
+            node.SpecialUse is not null ||
+            (node.LastActivity is { } last && last >= cutoff) ||
+            anyChildVisible;
+
+        node.Visibility = keep ? Visibility.Visible : Visibility.Collapsed;
+        return keep;
+    }
+
+    void OnExpandAll(object sender, RoutedEventArgs e) => SetExpansion(true);
+    void OnCollapseAll(object sender, RoutedEventArgs e) => SetExpansion(false);
+
+    void SetExpansion(bool expanded)
+    {
+        foreach (var item in FolderTree.Items.OfType<FolderNodeViewModel>())
+            SetExpansion(item, expanded, isRoot: true);
+    }
+
+    static void SetExpansion(FolderNodeViewModel node, bool expanded, bool isRoot = false)
+    {
+        node.IsExpanded = isRoot || expanded; // mailbox roots stay open
+        foreach (var child in node.Children)
+            SetExpansion(child, expanded);
     }
 
     sealed record FolderRow(
@@ -361,11 +586,13 @@ public partial class MainWindow : Window
         {
             Dictionary<long, (long Total, long Unread)> counts;
             List<FolderRow> folders;
+            Dictionary<long, DateTimeOffset> activity;
             try
             {
                 using var db = MailboxDatabase.Open(mailbox.DbPath, mailbox.Dek);
                 counts = QueryLocalCounts(db);
                 folders = QueryFolders(db);
+                activity = QueryFolderActivity(db);
             }
             catch
             {
@@ -376,16 +603,24 @@ public partial class MainWindow : Window
             {
                 _treeRefreshPending.Remove(mailbox.Upn);
                 foreach (var row in folders)
-                    if (_folderItems.TryGetValue((mailbox.Upn, row.Id), out var item))
-                        item.Header = FolderHeader(row, counts);
+                {
+                    if (_folderNodes.TryGetValue((mailbox.Upn, row.Id), out var node))
+                    {
+                        ApplyCounts(node, row, counts);
+                        node.LastActivity = activity.GetValueOrDefault(row.Id);
+                    }
+                    if (_favouriteNodes.TryGetValue((mailbox.Upn, row.Id), out var favourite))
+                        ApplyCounts(favourite, row, counts);
+                }
             });
         });
     }
 
     void OnFolderSelected(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
-        if (FolderTree.SelectedItem is TreeViewItem { Tag: FolderNode node })
-            LoadFolder(node);
+        if (FolderTree.SelectedItem is FolderNodeViewModel node &&
+            node.Mailbox is MailboxHandle mailbox && !node.IsGroupHeader)
+            LoadFolder(new FolderNode(mailbox, node.FolderId, node.Name));
     }
 
     // ---- message list --------------------------------------------------------
@@ -531,9 +766,8 @@ public partial class MainWindow : Window
     void OnMoveToOpened(object sender, RoutedEventArgs e)
     {
         MoveToMenu.Items.Clear();
-        var mailbox = SelectedRows().FirstOrDefault()?.Mailbox as MailboxHandle;
-        if (mailbox is null && (FolderTree.SelectedItem as TreeViewItem)?.Tag is FolderNode node)
-            mailbox = node.Mailbox;
+        var mailbox = SelectedRows().FirstOrDefault()?.Mailbox as MailboxHandle
+            ?? (FolderTree.SelectedItem as FolderNodeViewModel)?.Mailbox as MailboxHandle;
         if (mailbox is null) return;
         foreach (var folder in QueryFolders(mailbox).Where(f => f.ServerId is not null))
         {
@@ -568,8 +802,9 @@ public partial class MainWindow : Window
     void RefreshAfterAction(MailboxHandle mailbox)
     {
         UpdateTreeCounts(mailbox);
-        if (FolderTree.SelectedItem is TreeViewItem { Tag: FolderNode node })
-            LoadFolder(node);
+        if (FolderTree.SelectedItem is FolderNodeViewModel selected &&
+            selected.Mailbox is MailboxHandle selectedMailbox && !selected.IsGroupHeader)
+            LoadFolder(new FolderNode(selectedMailbox, selected.FolderId, selected.Name));
     }
 
     /// <summary>Raw access token for calls the typed SDK cannot express (raw-MIME send).</summary>
@@ -973,13 +1208,13 @@ public partial class MainWindow : Window
         if (term.Length == 0)
         {
             SearchBox.Background = System.Windows.Media.Brushes.Transparent;
-            if (FolderTree.SelectedItem is TreeViewItem { Tag: FolderNode node })
-                LoadFolder(node);
+            if (FolderTree.SelectedItem is FolderNodeViewModel selected &&
+                selected.Mailbox is MailboxHandle selectedMailbox && !selected.IsGroupHeader)
+                LoadFolder(new FolderNode(selectedMailbox, selected.FolderId, selected.Name));
             return;
         }
-        var mailbox = (FolderTree.SelectedItem as TreeViewItem)?.Tag is FolderNode selected
-            ? selected.Mailbox
-            : _mailboxes.FirstOrDefault();
+        var mailbox = (FolderTree.SelectedItem as FolderNodeViewModel)?.Mailbox as MailboxHandle
+            ?? _mailboxes.FirstOrDefault();
         if (mailbox is null) return;
         try
         {
@@ -1170,8 +1405,9 @@ public partial class MainWindow : Window
                 SyncLabel.Text = summary;
                 Log(summary);
             }
-            if (FolderTree.SelectedItem is TreeViewItem { Tag: FolderNode node })
-                LoadFolder(node);
+            if (FolderTree.SelectedItem is FolderNodeViewModel selected &&
+                selected.Mailbox is MailboxHandle selectedMailbox && !selected.IsGroupHeader)
+                LoadFolder(new FolderNode(selectedMailbox, selected.FolderId, selected.Name));
         }
         catch (Exception ex)
         {

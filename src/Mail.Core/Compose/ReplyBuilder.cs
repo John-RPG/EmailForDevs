@@ -15,7 +15,10 @@ public sealed record Draft(
     string Body,
     string? InReplyTo = null,
     IReadOnlyList<string>? References = null,
-    IReadOnlyList<DraftAttachment>? Attachments = null);
+    IReadOnlyList<DraftAttachment>? Attachments = null,
+    /// <summary>When set, the message is sent as multipart/alternative with
+    /// <see cref="Body"/> as the plain-text alternative.</summary>
+    string? HtmlBody = null);
 
 public sealed record DraftAttachment(string FileName, string ContentType, byte[] Content);
 
@@ -69,6 +72,9 @@ public static class ReplyBuilder
         if (references.Count > MaxReferences)
             references = [.. references.Take(1), .. references.Skip(references.Count - (MaxReferences - 1))];
 
+        // Match the original's format: replying to HTML mail composes in HTML.
+        var htmlQuote = original.HtmlBody is not null ? QuoteHtmlBody(original, kind) : null;
+
         return new Draft(
             From: fromAddress,
             To: to,
@@ -78,7 +84,8 @@ public static class ReplyBuilder
             Body: QuoteBody(original, kind),
             InReplyTo: kind == ReplyKind.Forward ? null : original.MessageId,
             References: kind == ReplyKind.Forward ? [] : references,
-            Attachments: []);
+            Attachments: [],
+            HtmlBody: htmlQuote);
     }
 
     public static bool SameAddress(string a, string b) =>
@@ -126,6 +133,31 @@ public static class ReplyBuilder
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Quotes an HTML original using the blockquote convention every mail client
+    /// understands, with an attribution line above it.
+    /// </summary>
+    static string QuoteHtmlBody(MimeMessage original, ReplyKind kind)
+    {
+        var html = original.HtmlBody ?? "";
+        var attribution = kind == ReplyKind.Forward
+            ? "---------- Forwarded message ----------<br>" +
+              $"<b>From:</b> {Escape(Describe(original.From))}<br>" +
+              $"<b>Date:</b> {Escape(original.Date.LocalDateTime.ToString("f"))}<br>" +
+              $"<b>Subject:</b> {Escape(original.Subject ?? "")}<br>" +
+              $"<b>To:</b> {Escape(Describe(original.To))}<br>"
+            : $"On {Escape(original.Date.LocalDateTime.ToString("f"))}, " +
+              $"{Escape(Describe(original.From))} wrote:";
+
+        return "<div><br></div><div>" + attribution + "</div>" +
+               "<blockquote style=\"margin:0 0 0 0.8ex;border-left:2px solid #ccc;padding-left:1ex\">" +
+               html +
+               "</blockquote>";
+    }
+
+    static string Escape(string text) =>
+        text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+
     static string Describe(InternetAddressList list) =>
         string.Join(", ", list.Mailboxes.Select(m =>
             string.IsNullOrWhiteSpace(m.Name) ? m.Address : $"{m.Name} <{m.Address}>"));
@@ -155,6 +187,15 @@ public static class ReplyBuilder
             message.References.Add(reference);
 
         var builder = new BodyBuilder { TextBody = draft.Body ?? "" };
+        if (!string.IsNullOrWhiteSpace(draft.HtmlBody))
+        {
+            // multipart/alternative: HTML for clients that render it, and the
+            // plain-text part stays meaningful for those that do not (and for
+            // spam filters, which distrust HTML-only mail).
+            builder.HtmlBody = draft.HtmlBody;
+            if (string.IsNullOrWhiteSpace(draft.Body))
+                builder.TextBody = Ingest.HtmlText.ToPlainText(draft.HtmlBody);
+        }
         foreach (var attachment in draft.Attachments ?? [])
             builder.Attachments.Add(
                 attachment.FileName, attachment.Content, ContentType.Parse(attachment.ContentType));

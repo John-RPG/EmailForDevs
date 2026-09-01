@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column;
+         font-family: "Segoe UI", sans-serif; font-size: 13px; }
+  #bar { flex: 0 0 auto; padding: 4px; border-bottom: 1px solid #ccc;
+         background: #f6f6f6; display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
+  #bar button, #bar select {
+      font-family: inherit; font-size: 12px; min-width: 26px; height: 24px;
+      border: 1px solid transparent; background: transparent; cursor: pointer;
+      border-radius: 3px; padding: 0 6px; }
+  #bar button:hover, #bar select:hover { background: #e2e2e2; border-color: #c8c8c8; }
+  #bar .sep { width: 1px; height: 18px; background: #ccc; margin: 0 4px; }
+  #bar button b, #bar button i, #bar button u, #bar button s { pointer-events: none; }
+  #editor { flex: 1 1 auto; padding: 8px; outline: none; overflow-y: auto;
+            font-family: "Segoe UI", sans-serif; font-size: 14px; }
+  #editor blockquote { margin: 0 0 0 0.8ex; border-left: 2px solid #ccc; padding-left: 1ex; }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <button title="Bold (Ctrl+B)" onclick="cmd('bold')"><b>B</b></button>
+    <button title="Italic (Ctrl+I)" onclick="cmd('italic')"><i>I</i></button>
+    <button title="Underline (Ctrl+U)" onclick="cmd('underline')"><u>U</u></button>
+    <button title="Strikethrough" onclick="cmd('strikeThrough')"><s>S</s></button>
+    <span class="sep"></span>
+    <select title="Style" onchange="cmd('formatBlock', this.value); this.selectedIndex = 0;">
+      <option value="">Style</option>
+      <option value="p">Normal</option>
+      <option value="h1">Heading 1</option>
+      <option value="h2">Heading 2</option>
+      <option value="h3">Heading 3</option>
+      <option value="pre">Code block</option>
+      <option value="blockquote">Quote</option>
+    </select>
+    <select title="Size" onchange="cmd('fontSize', this.value); this.selectedIndex = 0;">
+      <option value="">Size</option>
+      <option value="1">Tiny</option>
+      <option value="2">Small</option>
+      <option value="3">Normal</option>
+      <option value="4">Large</option>
+      <option value="5">Larger</option>
+      <option value="6">Huge</option>
+    </select>
+    <span class="sep"></span>
+    <button title="Bulleted list" onclick="cmd('insertUnorderedList')">&#8226;&#8212;</button>
+    <button title="Numbered list" onclick="cmd('insertOrderedList')">1&#8212;</button>
+    <button title="Indent" onclick="cmd('indent')">&#8594;</button>
+    <button title="Outdent" onclick="cmd('outdent')">&#8592;</button>
+    <span class="sep"></span>
+    <button title="Align left" onclick="cmd('justifyLeft')">&#8801;</button>
+    <button title="Align centre" onclick="cmd('justifyCenter')">&#8803;</button>
+    <button title="Align right" onclick="cmd('justifyRight')">&#8802;</button>
+    <span class="sep"></span>
+    <button title="Text colour" onclick="pickColour()">&#9632;</button>
+    <button title="Insert link (Ctrl+K)" onclick="insertLink()">&#128279;</button>
+    <button title="Horizontal rule" onclick="cmd('insertHorizontalRule')">&#8213;</button>
+    <span class="sep"></span>
+    <button title="Remove formatting" onclick="cmd('removeFormat')">&#10006;</button>
+  </div>
+  <div id="editor" contenteditable="true"></div>
+
+<script>
+  const editor = document.getElementById('editor');
+
+  function cmd(name, value) {
+    editor.focus();
+    document.execCommand(name, false, value ?? null);
+  }
+
+  function pickColour() {
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.value = '#000000';
+    input.addEventListener('change', () => cmd('foreColor', input.value));
+    input.click();
+  }
+
+  function insertLink() {
+    const url = window.prompt('Link URL', 'https://');
+    if (url) cmd('createLink', url);
+  }
+
+  // Paste as plain text by default: pasted mail HTML otherwise drags in
+  // fonts, tables and tracking markup we do not want to re-send.
+  editor.addEventListener('paste', e => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData('text/plain');
+    document.execCommand('insertText', false, text);
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.ctrlKey && e.key.toLowerCase() === 'k') { e.preventDefault(); insertLink(); }
+  });
+
+  // Host bridge: the app reads and writes the body through these.
+  window.setBody = html => { editor.innerHTML = html || ''; };
+  window.getBody = () => editor.innerHTML;
+  window.focusBody = () => {
+    editor.focus();
+    const range = document.createRange();
+    range.setStart(editor, 0);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+</script>
+</body>
+</html>

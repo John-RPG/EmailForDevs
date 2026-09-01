@@ -1,8 +1,11 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Reflection;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using Mail.Core.Compose;
+using Microsoft.Web.WebView2.Core;
 using MimeKit;
 
 namespace Mail.App;
@@ -21,6 +24,8 @@ public partial class ComposeWindow : Window
     readonly ObservableCollection<AttachmentEntry> _attachments = [];
     readonly Func<string, MimeMessage, Task> _send;
     readonly Draft? _seed;
+    bool _isRich;
+    bool _editorReady;
 
     /// <param name="accounts">Addresses that can appear in From.</param>
     /// <param name="send">Given the sending account address and the built message, delivers it.</param>
@@ -51,11 +56,18 @@ public partial class ComposeWindow : Window
                     attachment.FileName, attachment.ContentType, attachment.Content));
         }
 
-        Loaded += (_, _) =>
+        // Format follows the message being replied to; new mail starts plain.
+        _isRich = seed?.HtmlBody is not null;
+        RichRadio.IsChecked = _isRich;
+        PlainRadio.IsChecked = !_isRich;
+
+        Loaded += async (_, _) =>
         {
+            if (_isRich)
+                await ShowRichEditorAsync(seed?.HtmlBody ?? "");
             if (seed is null || seed.To.Count == 0)
                 ToBox.Focus();
-            else
+            else if (!_isRich)
             {
                 BodyBox.Focus();
                 BodyBox.CaretIndex = 0; // above the quoted text
@@ -63,25 +75,30 @@ public partial class ComposeWindow : Window
         };
     }
 
-    Draft CurrentDraft() => new(
-        From: FromBox.SelectedItem as string ?? "",
-        To: ReplyBuilder.SplitAddresses(ToBox.Text),
-        Cc: ReplyBuilder.SplitAddresses(CcBox.Text),
-        Bcc: ReplyBuilder.SplitAddresses(BccBox.Text),
-        Subject: SubjectBox.Text ?? "",
-        Body: BodyBox.Text ?? "",
-        InReplyTo: _seed?.InReplyTo,
-        References: _seed?.References,
-        Attachments: [.. _attachments.Select(a =>
-            new DraftAttachment(a.FileName, a.ContentType, a.Content))]);
-
-    MimeMessage? TryBuild(out string? error)
+    async Task<Draft> CurrentDraftAsync()
     {
-        error = null;
-        var draft = CurrentDraft();
+        var html = _isRich ? await ReadRichBodyAsync() : null;
+        return new Draft(
+            From: FromBox.SelectedItem as string ?? "",
+            To: ReplyBuilder.SplitAddresses(ToBox.Text),
+            Cc: ReplyBuilder.SplitAddresses(CcBox.Text),
+            Bcc: ReplyBuilder.SplitAddresses(BccBox.Text),
+            Subject: SubjectBox.Text ?? "",
+            // In rich mode ReplyBuilder derives the text alternative from the HTML.
+            Body: _isRich ? "" : BodyBox.Text ?? "",
+            InReplyTo: _seed?.InReplyTo,
+            References: _seed?.References,
+            Attachments: [.. _attachments.Select(a =>
+                new DraftAttachment(a.FileName, a.ContentType, a.Content))],
+            HtmlBody: html);
+    }
+
+    async Task<MimeMessage?> TryBuildAsync(Action<string> onError)
+    {
+        var draft = await CurrentDraftAsync();
         if (draft.To.Count == 0 && draft.Cc.Count == 0 && draft.Bcc.Count == 0)
         {
-            error = "Add at least one recipient.";
+            onError("Add at least one recipient.");
             return null;
         }
         try
@@ -90,9 +107,116 @@ public partial class ComposeWindow : Window
         }
         catch (Exception ex)
         {
-            error = $"Address problem: {ex.Message}";
+            onError($"Address problem: {ex.Message}");
             return null;
         }
+    }
+
+    // ---- rich editor ---------------------------------------------------------
+
+    void OnFormatChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        _ = SwitchFormatAsync(RichRadio.IsChecked == true);
+    }
+
+    async Task SwitchFormatAsync(bool rich)
+    {
+        if (rich == _isRich) return;
+        if (rich)
+        {
+            // Carry the plain text across as escaped HTML so nothing is lost.
+            var html = System.Net.WebUtility.HtmlEncode(BodyBox.Text ?? "")
+                .Replace("\r\n", "\n").Replace("\n", "<br>");
+            _isRich = true;
+            await ShowRichEditorAsync(html);
+        }
+        else
+        {
+            // Going back to plain flattens the HTML; warn before losing formatting.
+            var html = await ReadRichBodyAsync();
+            if (!string.IsNullOrWhiteSpace(html) &&
+                MessageBox.Show(this,
+                    "Switching to plain text will discard formatting. Continue?",
+                    "eeeMail", MessageBoxButton.OKCancel, MessageBoxImage.Warning)
+                != MessageBoxResult.OK)
+            {
+                RichRadio.IsChecked = true;
+                return;
+            }
+            BodyBox.Text = Mail.Core.Ingest.HtmlText.ToPlainText(html ?? "");
+            _isRich = false;
+            RichEditor.Visibility = Visibility.Collapsed;
+            BodyBox.Visibility = Visibility.Visible;
+            BodyBox.Focus();
+        }
+    }
+
+    async Task ShowRichEditorAsync(string html)
+    {
+        BodyBox.Visibility = Visibility.Collapsed;
+        RichEditor.Visibility = Visibility.Visible;
+        await EnsureEditorAsync();
+        var json = JsonSerializer.Serialize(html ?? "");
+        await RichEditor.CoreWebView2.ExecuteScriptAsync($"window.setBody({json});");
+        await RichEditor.CoreWebView2.ExecuteScriptAsync("window.focusBody();");
+    }
+
+    async Task EnsureEditorAsync()
+    {
+        if (_editorReady) return;
+        var environment = await CoreWebView2Environment.CreateAsync(
+            userDataFolder: Path.Combine(Path.GetTempPath(), "eeemail-editor"));
+        await RichEditor.EnsureCoreWebView2Async(environment);
+
+        var settings = RichEditor.CoreWebView2.Settings;
+        settings.AreDevToolsEnabled = false;
+        settings.IsPasswordAutosaveEnabled = false;
+        settings.IsGeneralAutofillEnabled = false;
+        settings.IsStatusBarEnabled = false;
+        settings.AreDefaultContextMenusEnabled = true; // spell-check and clipboard
+
+        // The editor is a local page: refuse every network request, exactly like
+        // the reading pane. Composing must never phone home.
+        RichEditor.CoreWebView2.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+        RichEditor.CoreWebView2.WebResourceRequested += (_, args) =>
+        {
+            var uri = args.Request.Uri;
+            if (uri.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
+                uri.StartsWith("about:", StringComparison.OrdinalIgnoreCase))
+                return;
+            args.Response = RichEditor.CoreWebView2.Environment
+                .CreateWebResourceResponse(null, 403, "Blocked", "");
+        };
+
+        var page = ReadEmbeddedEditor();
+        var loaded = new TaskCompletionSource();
+        void OnLoaded(object? _, CoreWebView2NavigationCompletedEventArgs __)
+        {
+            RichEditor.CoreWebView2.NavigationCompleted -= OnLoaded;
+            loaded.TrySetResult();
+        }
+        RichEditor.CoreWebView2.NavigationCompleted += OnLoaded;
+        RichEditor.CoreWebView2.NavigateToString(page);
+        await loaded.Task;
+        _editorReady = true;
+    }
+
+    static string ReadEmbeddedEditor()
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        var name = assembly.GetManifestResourceNames()
+            .First(n => n.EndsWith("editor.html", StringComparison.OrdinalIgnoreCase));
+        using var stream = assembly.GetManifestResourceStream(name)!;
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
+
+    async Task<string?> ReadRichBodyAsync()
+    {
+        if (!_editorReady || RichEditor.CoreWebView2 is null) return _seed?.HtmlBody;
+        var json = await RichEditor.CoreWebView2.ExecuteScriptAsync("window.getBody();");
+        return JsonSerializer.Deserialize<string>(json);
     }
 
     void OnAttach(object sender, RoutedEventArgs e)
@@ -128,14 +252,11 @@ public partial class ComposeWindow : Window
         _ => "application/octet-stream",
     };
 
-    void OnShowSource(object sender, RoutedEventArgs e)
+    async void OnShowSource(object sender, RoutedEventArgs e)
     {
-        var message = TryBuild(out var error);
+        var message = await TryBuildAsync(msg => StatusText.Text = msg);
         if (message is null)
-        {
-            StatusText.Text = error;
             return;
-        }
         using var stream = new MemoryStream();
         message.WriteTo(stream);
         var source = System.Text.Encoding.UTF8.GetString(stream.ToArray());
@@ -161,12 +282,9 @@ public partial class ComposeWindow : Window
 
     async void OnSend(object sender, RoutedEventArgs e)
     {
-        var message = TryBuild(out var error);
+        var message = await TryBuildAsync(msg => StatusText.Text = msg);
         if (message is null)
-        {
-            StatusText.Text = error;
             return;
-        }
         SendButton.IsEnabled = false;
         StatusText.Text = "Sending…";
         try

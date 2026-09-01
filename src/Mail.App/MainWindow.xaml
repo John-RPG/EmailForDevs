@@ -60,12 +60,59 @@
 
             <Grid Grid.Column="0">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*" MinHeight="80"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="200" MinHeight="40"/>
                 </Grid.RowDefinitions>
-                <TreeView x:Name="FolderTree" Grid.Row="0"
-                          SelectedItemChanged="OnFolderSelected" BorderThickness="0,1,0,0"/>
-                <Expander Grid.Row="1" Header="Activity log" IsExpanded="True"
+
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,2">
+                    <ToggleButton x:Name="HideQuietToggle" Content="Hide quiet"
+                                  Padding="6,1" Click="OnHideQuietChanged"
+                                  ToolTip="Hide folders with nothing received in the last month (favourites and folders with unread mail always stay)"/>
+                    <Button Content="Expand" Padding="6,1" Margin="4,0,0,0" Click="OnExpandAll"/>
+                    <Button Content="Collapse" Padding="6,1" Margin="4,0,0,0" Click="OnCollapseAll"/>
+                </StackPanel>
+
+                <TreeView x:Name="FolderTree" Grid.Row="1"
+                          SelectedItemChanged="OnFolderSelected" BorderThickness="0,1,0,0">
+                    <TreeView.ItemContainerStyle>
+                        <Style TargetType="TreeViewItem">
+                            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
+                            <Setter Property="Visibility" Value="{Binding Visibility}"/>
+                        </Style>
+                    </TreeView.ItemContainerStyle>
+                    <TreeView.ItemTemplate>
+                        <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                            <Grid Width="{Binding RowWidth}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{Binding Icon}" Margin="0,0,4,0"/>
+                                <TextBlock Grid.Column="1" Text="{Binding Name}"
+                                           TextTrimming="CharacterEllipsis"
+                                           FontWeight="{Binding Weight}"/>
+                                <TextBlock Grid.Column="2" Text="{Binding Counts}"
+                                           Foreground="{Binding CountBrush}"
+                                           FontWeight="{Binding Weight}"
+                                           TextAlignment="Right" Margin="6,0,4,0"/>
+                                <Grid.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="Add to favourites" Click="OnAddFavourite"/>
+                                        <MenuItem Header="Remove from favourites" Click="OnRemoveFavourite"/>
+                                    </ContextMenu>
+                                </Grid.ContextMenu>
+                            </Grid>
+                        </HierarchicalDataTemplate>
+                    </TreeView.ItemTemplate>
+                </TreeView>
+
+                <GridSplitter Grid.Row="2" Height="5" HorizontalAlignment="Stretch"
+                              VerticalAlignment="Center" ShowsPreview="True"/>
+
+                <Expander Grid.Row="3" Header="Activity log" IsExpanded="True"
                           BorderThickness="0,1,0,0">
                     <DockPanel>
                         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="2">
@@ -81,7 +128,7 @@
                                           Padding="6,0" Margin="1,0" Click="OnLogFilterChanged"/>
                             <Button Content="Clear" Margin="8,0,0,0" Padding="6,0" Click="OnLogClear"/>
                         </StackPanel>
-                        <ListBox x:Name="ActivityLog" Height="170" FontFamily="Consolas"
+                        <ListBox x:Name="ActivityLog" MinHeight="60" FontFamily="Consolas"
                                  FontSize="11" BorderThickness="0"
                                  ScrollViewer.HorizontalScrollBarVisibility="Auto">
                             <ListBox.ItemContainerStyle>

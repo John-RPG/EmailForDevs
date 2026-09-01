@@ -28,14 +28,34 @@ public sealed class FolderNodeViewModel : INotifyPropertyChanged
     public string Name
     {
         get => _name;
-        set { _name = value; Raise(nameof(Name)); }
+        set { _name = value; Raise(nameof(Name)); Raise(nameof(DisplayName)); }
     }
 
+    /// <summary>Path within the mailbox, e.g. /Organised/GumpyGoblin.</summary>
+    public string FolderPath { get; init; } = "";
+
+    /// <summary>Owning account, shown on favourites so they are unambiguous.</summary>
+    public string AccountName { get; init; } = "";
+
+    /// <summary>Favourites read as "account - /path"; everything else is just the name.</summary>
+    public string DisplayName => IsFavouriteEntry && AccountName.Length > 0
+        ? $"{AccountName} - {(FolderPath.Length > 0 ? FolderPath : "/" + Name)}"
+        : Name;
+
     string _counts = "";
+    /// <summary>Unread, or local/server unread while the local copy trails.</summary>
     public string Counts
     {
         get => _counts;
         set { _counts = value; Raise(nameof(Counts)); }
+    }
+
+    string _totals = "";
+    /// <summary>Message count, or local/server totals while still downloading.</summary>
+    public string Totals
+    {
+        get => _totals;
+        set { _totals = value; Raise(nameof(Totals)); }
     }
 
     bool _hasUnread;
@@ -80,10 +100,14 @@ public sealed class FolderNodeViewModel : INotifyPropertyChanged
         {
             if (IsGroupHeader || Mailbox is null) return Name;
             var parts = new List<string> { Name };
-            if (Counts.Contains('/'))
-                parts.Add("synced/total, then unread local/server");
-            else if (Counts.Length > 0)
-                parts.Add($"{Counts} unread");
+            if (Totals.Length > 0)
+                parts.Add(Totals.Contains('/')
+                    ? $"{Totals} messages synced of the server total"
+                    : $"{Totals} messages");
+            if (Counts.Length > 0)
+                parts.Add(Counts.Contains('/')
+                    ? $"{Counts} unread locally of the server unread count"
+                    : $"{Counts} unread");
             if (LastActivity is { } last)
                 parts.Add($"newest: {last.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
             return string.Join("\n", parts);

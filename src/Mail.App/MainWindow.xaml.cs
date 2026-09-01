@@ -264,7 +264,9 @@ public partial class MainWindow : Window
     void BuildTree()
     {
         FolderTree.Items.Clear();
+        FavouritesTree.Items.Clear();
         _folderNodes.Clear();
+        _favouriteNodes.Clear();
         FolderNodeViewModel? inboxNode = null;
 
         foreach (var mailbox in _mailboxes)
@@ -279,6 +281,7 @@ public partial class MainWindow : Window
             var localCounts = QueryLocalCounts(mailbox);
             var activity = QueryFolderActivity(mailbox);
             var nodes = new Dictionary<long, FolderNodeViewModel>();
+            var paths = BuildFolderPaths(rows);
 
             foreach (var row in rows)
             {
@@ -289,6 +292,8 @@ public partial class MainWindow : Window
                     ServerId = row.ServerId,
                     SpecialUse = row.Special,
                     Name = row.Name,
+                    FolderPath = paths.GetValueOrDefault(row.Id, "/" + row.Name),
+                    AccountName = mailbox.Upn,
                     IsExpanded = true,
                     LastActivity = activity.GetValueOrDefault(row.Id),
                 };
@@ -299,13 +304,17 @@ public partial class MainWindow : Window
                     inboxNode ??= node;
             }
 
-            // Favourites first, as a group of shortcuts to real folders.
-            var favourites = new FolderNodeViewModel
+            foreach (var row in rows)
             {
-                Name = "Favourites",
-                IsGroupHeader = true,
-                IsExpanded = true,
-            };
+                var parent = row.ParentId is long p && nodes.TryGetValue(p, out var pn)
+                    ? pn.Children
+                    : root.Children;
+                parent.Add(nodes[row.Id]);
+            }
+            FolderTree.Items.Add(root);
+
+            // Favourites live in their own control above the folders, each row
+            // labelled with its account so identical folder names stay distinct.
             foreach (var favouriteId in FavouritesFor(mailbox.Upn))
             {
                 if (!nodes.TryGetValue(favouriteId, out var source)) continue;
@@ -316,30 +325,48 @@ public partial class MainWindow : Window
                     ServerId = source.ServerId,
                     SpecialUse = source.SpecialUse,
                     Name = source.Name,
+                    FolderPath = source.FolderPath,
+                    AccountName = mailbox.Upn,
                     Counts = source.Counts,
+                    Totals = source.Totals,
                     HasUnread = source.HasUnread,
                     IsFavouriteEntry = true,
                     LastActivity = source.LastActivity,
                 };
-                favourites.Children.Add(shortcut);
+                FavouritesTree.Items.Add(shortcut);
                 _favouriteNodes[(mailbox.Upn, source.FolderId)] = shortcut;
             }
-            if (favourites.Children.Count > 0)
-                root.Children.Add(favourites);
-
-            foreach (var row in rows)
-            {
-                var parent = row.ParentId is long p && nodes.TryGetValue(p, out var pn)
-                    ? pn.Children
-                    : root.Children;
-                parent.Add(nodes[row.Id]);
-            }
-            FolderTree.Items.Add(root);
         }
+
+        var hasFavourites = FavouritesTree.Items.Count > 0;
+        FavouritesTree.Visibility = hasFavourites ? Visibility.Visible : Visibility.Collapsed;
+        FavouritesHeader.Visibility = hasFavourites ? Visibility.Visible : Visibility.Collapsed;
+        FavouritesSplitter.Visibility = hasFavourites ? Visibility.Visible : Visibility.Collapsed;
 
         ApplyQuietFilter();
         if (inboxNode is not null)
             SelectNode(inboxNode);
+    }
+
+    /// <summary>Full path per folder (/Organised/GumpyGoblin) for favourite labels.</summary>
+    static Dictionary<long, string> BuildFolderPaths(List<FolderRow> rows)
+    {
+        var byId = rows.ToDictionary(r => r.Id);
+        var paths = new Dictionary<long, string>();
+        foreach (var row in rows)
+        {
+            var parts = new List<string> { row.Name };
+            var current = row;
+            var guard = 0;
+            while (current.ParentId is long parentId &&
+                   byId.TryGetValue(parentId, out var parent) && guard++ < 32)
+            {
+                parts.Insert(0, parent.Name);
+                current = parent;
+            }
+            paths[row.Id] = "/" + string.Join("/", parts);
+        }
+        return paths;
     }
 
     static void ApplyCounts(
@@ -347,11 +374,15 @@ public partial class MainWindow : Window
         Dictionary<long, (long Total, long Unread)> local)
     {
         var (localTotal, localUnread) = local.GetValueOrDefault(row.Id);
+        var syncing = localTotal < row.ServerTotal;
+
         node.HasUnread = localUnread > 0;
-        node.Counts = localTotal < row.ServerTotal
-            ? $"{localTotal:N0}/{row.ServerTotal:N0}" +
-              (row.ServerUnread > 0 ? $"  {localUnread:N0}/{row.ServerUnread:N0}" : "")
+        node.Counts = syncing && row.ServerUnread > 0
+            ? $"{localUnread:N0}/{row.ServerUnread:N0}"
             : localUnread > 0 ? $"{localUnread:N0}" : "";
+        node.Totals = syncing
+            ? $"{localTotal:N0}/{row.ServerTotal:N0}"
+            : localTotal > 0 ? $"{localTotal:N0}" : "";
     }
 
     /// <summary>Newest received_at per folder, for the quiet-folder filter.</summary>
@@ -496,6 +527,9 @@ public partial class MainWindow : Window
         var cutoff = DateTimeOffset.UtcNow.AddMonths(-1);
         foreach (var item in FolderTree.Items.OfType<FolderNodeViewModel>())
             ApplyQuietFilter(item, hide, cutoff);
+        // Favourites are an explicit choice; never hide them.
+        foreach (var item in FavouritesTree.Items.OfType<FolderNodeViewModel>())
+            item.Visibility = Visibility.Visible;
     }
 
     static bool ApplyQuietFilter(FolderNodeViewModel node, bool hide, DateTimeOffset cutoff)
@@ -631,6 +665,13 @@ public partial class MainWindow : Window
                 }
             });
         });
+    }
+
+    void OnFavouriteSelected(object sender, RoutedPropertyChangedEventArgs<object> e)
+    {
+        if (FavouritesTree.SelectedItem is FolderNodeViewModel node &&
+            node.Mailbox is MailboxHandle mailbox)
+            LoadFolder(new FolderNode(mailbox, node.FolderId, node.Name));
     }
 
     void OnFolderSelected(object sender, RoutedPropertyChangedEventArgs<object> e)

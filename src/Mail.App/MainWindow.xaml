@@ -5,85 +5,9 @@
         xmlns:local="clr-namespace:Mail.App"
         Title="eeeMail (dev)" Height="850" Width="1500" FontSize="12"
         WindowStartupLocation="CenterScreen">
-    <Window.InputBindings>
-        <KeyBinding Key="N" Modifiers="Ctrl" Command="{x:Static local:MainWindow.ComposeCommand}"/>
-        <KeyBinding Key="R" Modifiers="Ctrl" Command="{x:Static local:MainWindow.ReplyCommand}"/>
-        <KeyBinding Key="R" Modifiers="Ctrl+Shift" Command="{x:Static local:MainWindow.ReplyAllCommand}"/>
-        <KeyBinding Key="F" Modifiers="Ctrl" Command="{x:Static local:MainWindow.ForwardCommand}"/>
-    </Window.InputBindings>
-    <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
-
-        <DockPanel Grid.Row="0" Margin="4,4,4,2">
-            <Button DockPanel.Dock="Left" Content="New" Click="OnComposeNew"
-                    Margin="0,0,4,0" Padding="12,2" ToolTip="New message (Ctrl+N)"/>
-            <Button DockPanel.Dock="Left" Content="Reply" Click="OnReply"
-                    Margin="0,0,4,0" Padding="10,2" ToolTip="Reply (Ctrl+R)"/>
-            <Button DockPanel.Dock="Left" Content="Reply all" Click="OnReplyAll"
-                    Margin="0,0,4,0" Padding="10,2" ToolTip="Reply all (Ctrl+Shift+R)"/>
-            <Button DockPanel.Dock="Left" Content="Forward" Click="OnForward"
-                    Margin="0,0,10,0" Padding="10,2" ToolTip="Forward (Ctrl+F)"/>
-            <Button DockPanel.Dock="Right" Content="Search" Click="OnSearchClick"
-                    Margin="4,0,0,0" Padding="10,2"/>
-            <TextBox x:Name="SearchBox" KeyDown="OnSearchKeyDown"
-                     VerticalContentAlignment="Center">
-                <TextBox.ToolTip>
-                    <TextBlock>
-                        Search (Enter). Bare words are full text; empty returns to the folder.<LineBreak/>
-                        <LineBreak/>
-                        <Bold>People</Bold>  from: to: cc: bcc: recipient: participant:<LineBreak/>
-                        <Bold>Content</Bold>  subject: body: filename: in:<LineBreak/>
-                        <Bold>State</Bold>  is:unread is:read is:flagged is:draft has:attachment<LineBreak/>
-                        <Bold>Dates</Bold>  after: before: on:  — 2026-08-31, 2026-08, today, 7d, 3m<LineBreak/>
-                        <Bold>Size</Bold>  larger:2mb smaller:500kb<LineBreak/>
-                        <Bold>Logic</Bold>  AND (implicit), OR, NOT or -, ( ), "quoted phrases"<LineBreak/>
-                        <Bold>Wildcards</Bold>  * and ? in field values (anchored: from:*@corp.com,<LineBreak/>
-                        filename:*.pdf, subject:*report*); trailing * on bare words (invoic*).<LineBreak/>
-                        Escape with a backslash for literals: \* \? \\<LineBreak/>
-                        <LineBreak/>
-                        Example: from:alice has:attachment after:3m -subject:"weekly report"
-                    </TextBlock>
-                </TextBox.ToolTip>
-            </TextBox>
-        </DockPanel>
-
-        <Grid Grid.Row="1">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="260" MinWidth="150"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="*" MinWidth="400"/>
-            </Grid.ColumnDefinitions>
-
-            <Grid Grid.Column="0">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*" MinHeight="80"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="200" MinHeight="40"/>
-                </Grid.RowDefinitions>
-
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,2">
-                    <ToggleButton x:Name="HideQuietToggle" Content="Hide quiet"
-                                  Padding="6,1" Click="OnHideQuietChanged"
-                                  ToolTip="Hide folders with nothing received in the last month (favourites and folders with unread mail always stay)"/>
-                    <Button Content="Expand" Padding="6,1" Margin="4,0,0,0" Click="OnExpandAll"/>
-                    <Button Content="Collapse" Padding="6,1" Margin="4,0,0,0" Click="OnCollapseAll"/>
-                </StackPanel>
-
-                <TreeView x:Name="FolderTree" Grid.Row="1"
-                          SelectedItemChanged="OnFolderSelected" BorderThickness="0,1,0,0"
-                          Grid.IsSharedSizeScope="True"
-                          HorizontalContentAlignment="Stretch"
-                          VerticalContentAlignment="Center"
-                          VirtualizingPanel.IsVirtualizing="True"
-                          VirtualizingPanel.VirtualizationMode="Recycling"
-                          ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                    <TreeView.Resources>
-                        <Style TargetType="TreeViewItem">
+    <Window.Resources>
+                    
+                        <Style x:Key="FolderRowStyle" TargetType="TreeViewItem">
                             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
                             <Setter Property="Visibility" Value="{Binding Visibility}"/>
                             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
@@ -174,21 +98,23 @@
                                 </Setter.Value>
                             </Setter>
                         </Style>
-                    </TreeView.Resources>
-                    <TreeView.ItemTemplate>
-                        <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+                    
+                    
+                        <HierarchicalDataTemplate x:Key="FolderRowTemplate" ItemsSource="{Binding Children}">
                             <Grid Background="Transparent" ToolTip="{Binding Tooltip}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
-                                    <!-- Shared group: every row reserves the same
-                                         width for counts, so they line up in a
-                                         column instead of trailing each name. -->
-                                    <ColumnDefinition Width="Auto" SharedSizeGroup="FolderCount"/>
+                                    <!-- Shared groups: every row reserves the same
+                                         width for each number, so unread and totals
+                                         line up as columns instead of trailing the
+                                         name at whatever width it happens to be. -->
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="FolderUnread"/>
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="FolderTotal"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="{Binding Icon}" Margin="0,0,5,0"
                                            VerticalAlignment="Center"/>
-                                <TextBlock Grid.Column="1" Text="{Binding Name}"
+                                <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
                                            TextTrimming="CharacterEllipsis"
                                            VerticalAlignment="Center"
                                            FontWeight="{Binding Weight}"/>
@@ -196,7 +122,11 @@
                                            Foreground="{Binding CountBrush}"
                                            FontWeight="{Binding Weight}"
                                            VerticalAlignment="Center"
-                                           TextAlignment="Right" MinWidth="34" Margin="8,0,4,0"/>
+                                           TextAlignment="Right" MinWidth="30" Margin="8,0,0,0"/>
+                                <TextBlock Grid.Column="3" Text="{Binding Totals}"
+                                           Foreground="Gray"
+                                           VerticalAlignment="Center"
+                                           TextAlignment="Right" MinWidth="46" Margin="8,0,4,0"/>
                                 <Grid.ContextMenu>
                                     <ContextMenu>
                                         <MenuItem Header="Add to favourites" Click="OnAddFavourite"/>
@@ -208,13 +138,114 @@
                                 </Grid.ContextMenu>
                             </Grid>
                         </HierarchicalDataTemplate>
-                    </TreeView.ItemTemplate>
-                </TreeView>
+                    
+    </Window.Resources>
+    <Window.InputBindings>
+        <KeyBinding Key="N" Modifiers="Ctrl" Command="{x:Static local:MainWindow.ComposeCommand}"/>
+        <KeyBinding Key="R" Modifiers="Ctrl" Command="{x:Static local:MainWindow.ReplyCommand}"/>
+        <KeyBinding Key="R" Modifiers="Ctrl+Shift" Command="{x:Static local:MainWindow.ReplyAllCommand}"/>
+        <KeyBinding Key="F" Modifiers="Ctrl" Command="{x:Static local:MainWindow.ForwardCommand}"/>
+    </Window.InputBindings>
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
 
-                <GridSplitter Grid.Row="2" Height="5" HorizontalAlignment="Stretch"
+        <DockPanel Grid.Row="0" Margin="4,4,4,2">
+            <Button DockPanel.Dock="Left" Content="New" Click="OnComposeNew"
+                    Margin="0,0,4,0" Padding="12,2" ToolTip="New message (Ctrl+N)"/>
+            <Button DockPanel.Dock="Left" Content="Reply" Click="OnReply"
+                    Margin="0,0,4,0" Padding="10,2" ToolTip="Reply (Ctrl+R)"/>
+            <Button DockPanel.Dock="Left" Content="Reply all" Click="OnReplyAll"
+                    Margin="0,0,4,0" Padding="10,2" ToolTip="Reply all (Ctrl+Shift+R)"/>
+            <Button DockPanel.Dock="Left" Content="Forward" Click="OnForward"
+                    Margin="0,0,10,0" Padding="10,2" ToolTip="Forward (Ctrl+F)"/>
+            <Button DockPanel.Dock="Right" Content="Search" Click="OnSearchClick"
+                    Margin="4,0,0,0" Padding="10,2"/>
+            <TextBox x:Name="SearchBox" KeyDown="OnSearchKeyDown"
+                     VerticalContentAlignment="Center">
+                <TextBox.ToolTip>
+                    <TextBlock>
+                        Search (Enter). Bare words are full text; empty returns to the folder.<LineBreak/>
+                        <LineBreak/>
+                        <Bold>People</Bold>  from: to: cc: bcc: recipient: participant:<LineBreak/>
+                        <Bold>Content</Bold>  subject: body: filename: in:<LineBreak/>
+                        <Bold>State</Bold>  is:unread is:read is:flagged is:draft has:attachment<LineBreak/>
+                        <Bold>Dates</Bold>  after: before: on:  — 2026-08-31, 2026-08, today, 7d, 3m<LineBreak/>
+                        <Bold>Size</Bold>  larger:2mb smaller:500kb<LineBreak/>
+                        <Bold>Logic</Bold>  AND (implicit), OR, NOT or -, ( ), "quoted phrases"<LineBreak/>
+                        <Bold>Wildcards</Bold>  * and ? in field values (anchored: from:*@corp.com,<LineBreak/>
+                        filename:*.pdf, subject:*report*); trailing * on bare words (invoic*).<LineBreak/>
+                        Escape with a backslash for literals: \* \? \\<LineBreak/>
+                        <LineBreak/>
+                        Example: from:alice has:attachment after:3m -subject:"weekly report"
+                    </TextBlock>
+                </TextBox.ToolTip>
+            </TextBox>
+        </DockPanel>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="260" MinWidth="150"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*" MinWidth="400"/>
+            </Grid.ColumnDefinitions>
+
+            <Grid Grid.Column="0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*" MinHeight="80"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="200" MinHeight="40"/>
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,2">
+                    <ToggleButton x:Name="HideQuietToggle" Content="Hide quiet"
+                                  Padding="6,1" Click="OnHideQuietChanged"
+                                  ToolTip="Hide folders with nothing received in the last month (favourites and folders with unread mail always stay)"/>
+                    <Button Content="Expand" Padding="6,1" Margin="4,0,0,0" Click="OnExpandAll"/>
+                    <Button Content="Collapse" Padding="6,1" Margin="4,0,0,0" Click="OnCollapseAll"/>
+                </StackPanel>
+
+                <TextBlock x:Name="FavouritesHeader" Grid.Row="1" Text="  ★ Favourites"
+                           Background="#FFEFEFEF" Foreground="#FF444444" Padding="2,3"
+                           FontWeight="Bold" Visibility="Collapsed"/>
+
+                <TreeView x:Name="FavouritesTree" Grid.Row="2"
+                          SelectedItemChanged="OnFavouriteSelected" BorderThickness="0,1,0,0"
+                          Grid.IsSharedSizeScope="True"
+                          MaxHeight="220"
+                          Visibility="Collapsed"
+                          HorizontalContentAlignment="Stretch"
+                          VerticalContentAlignment="Center"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          ItemContainerStyle="{DynamicResource FolderRowStyle}"
+                          ItemTemplate="{DynamicResource FolderRowTemplate}"/>
+
+                <GridSplitter Grid.Row="3" Height="4" HorizontalAlignment="Stretch"
+                              VerticalAlignment="Center" ShowsPreview="True"
+                              Visibility="Collapsed" x:Name="FavouritesSplitter"/>
+
+                <TreeView x:Name="FolderTree" Grid.Row="4"
+                          SelectedItemChanged="OnFolderSelected" BorderThickness="0,1,0,0"
+                          ItemContainerStyle="{DynamicResource FolderRowStyle}"
+                          ItemTemplate="{DynamicResource FolderRowTemplate}"
+                          Grid.IsSharedSizeScope="True"
+                          HorizontalContentAlignment="Stretch"
+                          VerticalContentAlignment="Center"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+
+                <GridSplitter Grid.Row="5" Height="5" HorizontalAlignment="Stretch"
                               VerticalAlignment="Center" ShowsPreview="True"/>
 
-                <Expander Grid.Row="3" Header="Activity log" IsExpanded="True"
+                <Expander Grid.Row="6" Header="Activity log" IsExpanded="True"
                           BorderThickness="0,1,0,0">
                     <DockPanel>
                         <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="2">

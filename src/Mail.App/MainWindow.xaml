@@ -76,29 +76,115 @@
 
                 <TreeView x:Name="FolderTree" Grid.Row="1"
                           SelectedItemChanged="OnFolderSelected" BorderThickness="0,1,0,0"
+                          Grid.IsSharedSizeScope="True"
                           HorizontalContentAlignment="Stretch"
+                          VerticalContentAlignment="Center"
                           VirtualizingPanel.IsVirtualizing="True"
                           VirtualizingPanel.VirtualizationMode="Recycling"
                           ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                     <TreeView.Resources>
-                        <!-- Rows must fill the tree width or the right-aligned count
-                             column has nothing to align against. -->
                         <Style TargetType="TreeViewItem">
                             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/>
                             <Setter Property="Visibility" Value="{Binding Visibility}"/>
                             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
                             <Setter Property="VerticalContentAlignment" Value="Center"/>
                             <Setter Property="Padding" Value="1,1"/>
+                            <!--
+                              The stock TreeViewItem template sizes its header to
+                              content, so a Stretch on the row alone never reaches
+                              the item. Retemplating gives the header a real column
+                              that fills the remaining width, which is what lets the
+                              count column sit hard right and the name ellipsize.
+                            -->
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="TreeViewItem">
+                                        <StackPanel>
+                                            <Border x:Name="Row"
+                                                    Background="{TemplateBinding Background}"
+                                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                                    Padding="{TemplateBinding Padding}"
+                                                    SnapsToDevicePixels="True">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="19"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <ToggleButton x:Name="Expander" Grid.Column="0"
+                                                                  ClickMode="Press"
+                                                                  IsChecked="{Binding IsExpanded,
+                                                                      RelativeSource={RelativeSource TemplatedParent}}">
+                                                        <ToggleButton.Style>
+                                                            <Style TargetType="ToggleButton">
+                                                                <Setter Property="Focusable" Value="False"/>
+                                                                <Setter Property="Width" Value="16"/>
+                                                                <Setter Property="Height" Value="16"/>
+                                                                <Setter Property="Template">
+                                                                    <Setter.Value>
+                                                                        <ControlTemplate TargetType="ToggleButton">
+                                                                            <Border Background="Transparent"
+                                                                                    Width="16" Height="16">
+                                                                                <Path x:Name="Arrow"
+                                                                                      HorizontalAlignment="Center"
+                                                                                      VerticalAlignment="Center"
+                                                                                      Data="M 0 0 L 4 4 L 0 8 Z"
+                                                                                      Fill="#FF666666"/>
+                                                                            </Border>
+                                                                            <ControlTemplate.Triggers>
+                                                                                <Trigger Property="IsChecked" Value="True">
+                                                                                    <Setter TargetName="Arrow"
+                                                                                            Property="Data"
+                                                                                            Value="M 0 2 L 8 2 L 4 6 Z"/>
+                                                                                </Trigger>
+                                                                            </ControlTemplate.Triggers>
+                                                                        </ControlTemplate>
+                                                                    </Setter.Value>
+                                                                </Setter>
+                                                            </Style>
+                                                        </ToggleButton.Style>
+                                                    </ToggleButton>
+                                                    <ContentPresenter x:Name="PART_Header" Grid.Column="1"
+                                                                      ContentSource="Header"
+                                                                      HorizontalAlignment="Stretch"/>
+                                                </Grid>
+                                            </Border>
+                                            <ItemsPresenter x:Name="ItemsHost" Margin="12,0,0,0"/>
+                                        </StackPanel>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsExpanded" Value="False">
+                                                <Setter TargetName="ItemsHost" Property="Visibility" Value="Collapsed"/>
+                                            </Trigger>
+                                            <Trigger Property="HasItems" Value="False">
+                                                <Setter TargetName="Expander" Property="Visibility" Value="Hidden"/>
+                                            </Trigger>
+                                            <Trigger Property="IsSelected" Value="True">
+                                                <Setter TargetName="Row" Property="Background" Value="#FF0078D7"/>
+                                                <Setter Property="Foreground" Value="White"/>
+                                            </Trigger>
+                                            <MultiTrigger>
+                                                <MultiTrigger.Conditions>
+                                                    <Condition Property="IsMouseOver" Value="True"/>
+                                                    <Condition Property="IsSelected" Value="False"/>
+                                                </MultiTrigger.Conditions>
+                                                <Setter TargetName="Row" Property="Background" Value="#FFE5F3FB"/>
+                                            </MultiTrigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
                         </Style>
                     </TreeView.Resources>
                     <TreeView.ItemTemplate>
                         <HierarchicalDataTemplate ItemsSource="{Binding Children}">
-                            <Grid HorizontalAlignment="Stretch" Background="Transparent"
-                                  ToolTip="{Binding Tooltip}">
+                            <Grid Background="Transparent" ToolTip="{Binding Tooltip}">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
+                                    <!-- Shared group: every row reserves the same
+                                         width for counts, so they line up in a
+                                         column instead of trailing each name. -->
+                                    <ColumnDefinition Width="Auto" SharedSizeGroup="FolderCount"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="{Binding Icon}" Margin="0,0,5,0"
                                            VerticalAlignment="Center"/>
@@ -110,7 +196,7 @@
                                            Foreground="{Binding CountBrush}"
                                            FontWeight="{Binding Weight}"
                                            VerticalAlignment="Center"
-                                           TextAlignment="Right" Margin="8,0,4,0"/>
+                                           TextAlignment="Right" MinWidth="34" Margin="8,0,4,0"/>
                                 <Grid.ContextMenu>
                                     <ContextMenu>
                                         <MenuItem Header="Add to favourites" Click="OnAddFavourite"/>

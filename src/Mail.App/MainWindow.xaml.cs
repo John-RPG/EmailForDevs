@@ -767,6 +767,7 @@ public partial class MainWindow : Window
         var term = SearchBox.Text.Trim();
         if (term.Length == 0)
         {
+            SearchBox.Background = System.Windows.Media.Brushes.Transparent;
             if (FolderTree.SelectedItem is TreeViewItem { Tag: FolderNode node })
                 LoadFolder(node);
             return;
@@ -777,7 +778,7 @@ public partial class MainWindow : Window
         if (mailbox is null) return;
         try
         {
-            var compiled = SqliteQueryCompiler.Compile(QueryNode.Text(term));
+            var compiled = SqliteQueryCompiler.Compile(QueryParser.Parse(term));
             using var cmd = mailbox.Db.CreateCommand();
             cmd.CommandText = RowSelect +
                 $" WHERE {compiled.WhereSql} ORDER BY m.received_at DESC LIMIT 500;";
@@ -785,10 +786,13 @@ public partial class MainWindow : Window
                 cmd.Parameters.AddWithValue(name, value);
             FillList(mailbox, cmd);
             StatusText.Text = $"Search '{term}' in {mailbox.Upn}: {MessageGrid.Items.Count:N0} hit(s)";
+            SearchBox.Background = System.Windows.Media.Brushes.Transparent;
         }
-        catch (QueryCompilationException ex)
+        catch (Exception ex) when (ex is QueryParseException or QueryCompilationException)
         {
-            StatusText.Text = $"Search error: {ex.Message}";
+            SearchBox.Background = new SolidColorBrush(Color.FromRgb(255, 235, 235));
+            StatusText.Text = $"Search: {ex.Message}";
+            Log(LogLevel.Warning, $"Search query rejected: {ex.Message}");
         }
     }
 

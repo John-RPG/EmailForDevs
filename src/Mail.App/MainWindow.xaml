@@ -15,8 +15,22 @@
             <Button DockPanel.Dock="Right" Content="Search" Click="OnSearchClick"
                     Margin="4,0,0,0" Padding="10,2"/>
             <TextBox x:Name="SearchBox" KeyDown="OnSearchKeyDown"
-                     VerticalContentAlignment="Center"
-                     ToolTip="Full-text search across the mailbox (Enter). Empty = back to folder view."/>
+                     VerticalContentAlignment="Center">
+                <TextBox.ToolTip>
+                    <TextBlock>
+                        Search (Enter). Bare words are full text; empty returns to the folder.<LineBreak/>
+                        <LineBreak/>
+                        <Bold>People</Bold>  from: to: cc: bcc: recipient: participant:<LineBreak/>
+                        <Bold>Content</Bold>  subject: body: filename: in:<LineBreak/>
+                        <Bold>State</Bold>  is:unread is:read is:flagged is:draft has:attachment<LineBreak/>
+                        <Bold>Dates</Bold>  after: before: on:  — 2026-08-31, 2026-08, today, 7d, 3m<LineBreak/>
+                        <Bold>Size</Bold>  larger:2mb smaller:500kb<LineBreak/>
+                        <Bold>Logic</Bold>  AND (implicit), OR, NOT or -, ( ), "quoted phrases"<LineBreak/>
+                        <LineBreak/>
+                        Example: from:alice has:attachment after:3m -subject:"weekly report"
+                    </TextBlock>
+                </TextBox.ToolTip>
+            </TextBox>
         </DockPanel>
 
         <Grid Grid.Row="1">

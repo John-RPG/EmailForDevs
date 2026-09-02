@@ -396,20 +396,30 @@ public partial class MainWindow : Window
         return paths;
     }
 
+    /// <summary>
+    /// Renders local/total then unread: 1,203/26,921  57. Unread keeps its own
+    /// column so it right-aligns rather than drifting with the width of the
+    /// totals in front of it; bold is enough to tell the two apart.
+    /// </summary>
     static void ApplyCounts(
         FolderNodeViewModel node, FolderRow row,
         Dictionary<long, (long Total, long Unread)> local)
     {
         var (localTotal, localUnread) = local.GetValueOrDefault(row.Id);
-        var syncing = localTotal < row.ServerTotal;
+        // The server total lags during a first sync, so trust whichever is
+        // larger rather than claiming to hold more messages than exist.
+        var serverTotal = Math.Max(row.ServerTotal, localTotal);
 
         node.HasUnread = localUnread > 0;
-        node.Counts = syncing && row.ServerUnread > 0
-            ? $"{localUnread:N0}/{row.ServerUnread:N0}"
-            : localUnread > 0 ? $"{localUnread:N0}" : "";
-        node.Totals = syncing
-            ? $"{localTotal:N0}/{row.ServerTotal:N0}"
-            : localTotal > 0 ? $"{localTotal:N0}" : "";
+        // Once a folder is fully mirrored, "26,950/26,950" is just noise that
+        // steals width from the folder name: show the pair only while they
+        // differ, which is exactly when the distinction matters.
+        node.Totals = serverTotal <= 0
+            ? ""
+            : localTotal < serverTotal
+                ? $"{localTotal:N0}/{serverTotal:N0}"
+                : $"{localTotal:N0}";
+        node.Counts = localUnread > 0 ? $"{localUnread:N0}" : "";
     }
 
     /// <summary>Newest received_at per folder, for the quiet-folder filter.</summary>

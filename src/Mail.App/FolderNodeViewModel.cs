@@ -101,13 +101,9 @@ public sealed class FolderNodeViewModel : INotifyPropertyChanged
             if (IsGroupHeader || Mailbox is null) return Name;
             var parts = new List<string> { Name };
             if (Totals.Length > 0)
-                parts.Add(Totals.Contains('/')
-                    ? $"{Totals} messages synced of the server total"
-                    : $"{Totals} messages");
+                parts.Add($"{Totals} messages held locally of the server total");
             if (Counts.Length > 0)
-                parts.Add(Counts.Contains('/')
-                    ? $"{Counts} unread locally of the server unread count"
-                    : $"{Counts} unread");
+                parts.Add($"{Counts} unread");
             if (LastActivity is { } last)
                 parts.Add($"newest: {last.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
             return string.Join("\n", parts);

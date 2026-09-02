@@ -344,8 +344,35 @@ public partial class MainWindow : Window
         FavouritesSplitter.Visibility = hasFavourites ? Visibility.Visible : Visibility.Collapsed;
 
         ApplyQuietFilter();
-        if (inboxNode is not null)
+        // Auto-select the inbox only when nothing is selected yet: a rebuild
+        // triggered by a background sync must not move the user.
+        if (inboxNode is not null && FolderTree.SelectedItem is null)
             SelectNode(inboxNode);
+    }
+
+    /// <summary>
+    /// Rebuilds the tree after the folder set changes, restoring the selected
+    /// folder and which nodes were expanded so a background sync does not yank
+    /// the view out from under the user.
+    /// </summary>
+    void RebuildTreePreservingState()
+    {
+        var selected = FolderTree.SelectedItem as FolderNodeViewModel;
+        var selectedKey = selected?.Mailbox is MailboxHandle m
+            ? (m.Upn, selected.FolderId)
+            : ((string, long)?)null;
+        var collapsed = _folderNodes
+            .Where(kv => !kv.Value.IsExpanded)
+            .Select(kv => kv.Key)
+            .ToHashSet();
+
+        BuildTree();
+
+        foreach (var key in collapsed)
+            if (_folderNodes.TryGetValue(key, out var node))
+                node.IsExpanded = false;
+        if (selectedKey is { } key2 && _folderNodes.TryGetValue(key2, out var restore))
+            SelectNode(restore);
     }
 
     /// <summary>Full path per folder (/Organised/GumpyGoblin) for favourite labels.</summary>
@@ -653,6 +680,19 @@ public partial class MainWindow : Window
             Dispatcher.BeginInvoke(() =>
             {
                 _treeRefreshPending.Remove(mailbox.Upn);
+
+                // A first sync discovers folders after the tree was built, so
+                // refreshing counts alone would leave a new account looking
+                // empty until the next launch. Rebuild when the folder set
+                // changes; otherwise just update the numbers in place, which
+                // keeps expansion and selection intact.
+                var known = _folderNodes.Keys.Count(k => k.Upn == mailbox.Upn);
+                if (folders.Count != known)
+                {
+                    RebuildTreePreservingState();
+                    return;
+                }
+
                 foreach (var row in folders)
                 {
                     if (_folderNodes.TryGetValue((mailbox.Upn, row.Id), out var node))

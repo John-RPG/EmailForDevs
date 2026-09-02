@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Interop;
 using Mail.Storage.Database;
 using Mail.Sync.Auth;
+using Microsoft.Identity.Client;
 using Microsoft.Data.Sqlite;
 
 namespace Mail.App;
@@ -252,11 +253,47 @@ public partial class AccountsWindow : Window
             LoadRows();
             StatusLabel.Text = $"Added {upn} (WindowedCache, 1 month — adjust above, then Save).";
         }
+        catch (MsalServiceException ex) when (IsConsentRequired(ex))
+        {
+            // The tenant requires an administrator to approve this app before
+            // anyone in it can sign in. Nothing is wrong with the sign-in
+            // itself, so say so plainly and let the user retry once approved
+            // rather than leaving them staring at an unchanged list.
+            StatusLabel.Text = "Waiting for admin approval - approve, then click Add account again.";
+            MessageBox.Show(
+                this,
+                "This organisation requires administrator approval before eeeMail can " +
+                "access its mail.\n\n" +
+                "An administrator must approve the request (the sign-in page links to " +
+                "it), after which clicking Add account again will complete setup.\n\n" +
+                $"Reported by Microsoft: {ex.Message}",
+                "eeeMail - approval required",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (MsalClientException ex) when (ex.ErrorCode == "authentication_canceled")
+        {
+            StatusLabel.Text = "Sign-in cancelled.";
+        }
         catch (Exception ex)
         {
             StatusLabel.Text = $"Add account failed: {ex.Message}";
+            MessageBox.Show(this, ex.ToString(), "eeeMail - add account failed",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
+
+    /// <summary>
+    /// True when Entra is asking for tenant admin consent rather than reporting
+    /// a real failure. AADSTS65001 is "user or admin has not consented";
+    /// AADSTS90094 is "admin consent required"; the interaction_required family
+    /// covers the same case surfaced through the broker.
+    /// </summary>
+    static bool IsConsentRequired(MsalServiceException ex) =>
+        ex.Message.Contains("AADSTS65001", StringComparison.OrdinalIgnoreCase) ||
+        ex.Message.Contains("AADSTS90094", StringComparison.OrdinalIgnoreCase) ||
+        ex.Message.Contains("admin", StringComparison.OrdinalIgnoreCase) &&
+            ex.Message.Contains("consent", StringComparison.OrdinalIgnoreCase);
 
     void OnCloseClick(object sender, RoutedEventArgs e) => Close();
 }

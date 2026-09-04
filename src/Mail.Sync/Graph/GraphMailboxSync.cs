@@ -28,8 +28,18 @@ public sealed class GraphMailboxSync(
     Func<SqliteConnection> dbFactory,
     Action<GraphMailboxSync.SyncProgressEvent>? progress = null,
     int maxConcurrentDownloads = 4,
-    int maxConcurrentFolders = 1)
+    int maxConcurrentFolders = 1,
+    string? mailboxAddress = null)
 {
+    /// <summary>
+    /// The mailbox being mirrored. Everything addresses /users/{upn} rather than
+    /// /me so a shared mailbox is not a special case: for the signed-in user's
+    /// own mailbox the two are the same resource, and Exchange applies the same
+    /// permission check either way.
+    /// </summary>
+    readonly Microsoft.Graph.Users.Item.UserItemRequestBuilder _mailbox =
+        graph.Users[mailboxAddress ?? "me"];
+
     public enum SyncPhase { Folders, Counting, Scanning, Downloading, FolderDone, Throttled }
 
     public sealed record SyncProgressEvent(
@@ -129,13 +139,13 @@ public sealed class GraphMailboxSync(
         try
         {
             using var readDb = dbFactory();
-            var deltaBuilder = graph.Me.MailFolders[folder.ServerId].Messages.Delta;
+            var deltaBuilder = _mailbox.MailFolders[folder.ServerId].Messages.Delta;
             var downloaded = 0;
             var scanned = 0;
             progress?.Invoke(new(SyncPhase.Downloading, folder.Name, index, _folderCount,
                 0, target, _overallDownloaded, _overallTarget));
 
-            Task<Microsoft.Graph.Me.MailFolders.Item.Messages.Delta.DeltaGetResponse?> FreshListing() =>
+            Task<Microsoft.Graph.Users.Item.MailFolders.Item.Messages.Delta.DeltaGetResponse?> FreshListing() =>
                 deltaBuilder.GetAsDeltaGetResponseAsync(rc =>
                 {
                     rc.QueryParameters.Select = DeltaSelect;
@@ -145,7 +155,7 @@ public sealed class GraphMailboxSync(
                             $"receivedDateTime ge {s.UtcDateTime:yyyy-MM-ddTHH:mm:ssZ}";
                 }, ct)!;
 
-            Microsoft.Graph.Me.MailFolders.Item.Messages.Delta.DeltaGetResponse? page;
+            Microsoft.Graph.Users.Item.MailFolders.Item.Messages.Delta.DeltaGetResponse? page;
             if (storedToken is not null)
             {
                 try
@@ -241,7 +251,7 @@ public sealed class GraphMailboxSync(
 
     async Task<byte[]> DownloadRawAsync(string messageId, CancellationToken ct)
     {
-        await using var stream = await graph.Me.Messages[messageId].Content
+        await using var stream = await _mailbox.Messages[messageId].Content
             .GetAsync(cancellationToken: ct)
             ?? throw new InvalidOperationException($"No MIME content for {messageId}.");
         using var buffer = new MemoryStream();
@@ -340,7 +350,7 @@ public sealed class GraphMailboxSync(
     {
         try
         {
-            return await graph.Me.MailFolders[serverFolderId].Messages.Count.GetAsync(rc =>
+            return await _mailbox.MailFolders[serverFolderId].Messages.Count.GetAsync(rc =>
             {
                 rc.Headers.Add("ConsistencyLevel", "eventual");
                 if (since is { } s)
@@ -360,7 +370,7 @@ public sealed class GraphMailboxSync(
         {
             try
             {
-                var folder = await graph.Me.MailFolders[wellKnown].GetAsync(cancellationToken: ct);
+                var folder = await _mailbox.MailFolders[wellKnown].GetAsync(cancellationToken: ct);
                 if (folder?.Id is string id)
                     map[id] = specialUse;
             }
@@ -391,8 +401,8 @@ public sealed class GraphMailboxSync(
         Action<(MailFolder Folder, string? ParentServerId)> visit)
     {
         var page = parentServerId is null
-            ? await graph.Me.MailFolders.GetAsync(rc => rc.QueryParameters.Top = 100, ct)
-            : await graph.Me.MailFolders[parentServerId].ChildFolders
+            ? await _mailbox.MailFolders.GetAsync(rc => rc.QueryParameters.Top = 100, ct)
+            : await _mailbox.MailFolders[parentServerId].ChildFolders
                 .GetAsync(rc => rc.QueryParameters.Top = 100, ct);
         while (page is not null)
         {
@@ -404,7 +414,7 @@ public sealed class GraphMailboxSync(
                     await WalkFoldersAsync(folder.Id, ct, visit);
             }
             if (page.OdataNextLink is null) break;
-            page = await graph.Me.MailFolders.WithUrl(page.OdataNextLink).GetAsync(cancellationToken: ct);
+            page = await _mailbox.MailFolders.WithUrl(page.OdataNextLink).GetAsync(cancellationToken: ct);
         }
     }
 

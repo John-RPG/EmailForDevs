@@ -153,9 +153,54 @@ guest Global Admin). Client IDs are public by design — safe to commit.
   enabled (device code available).
 - Delegated Graph permissions: Mail.ReadWrite, Mail.ReadWrite.Shared,
   Mail.Send, Mail.Send.Shared, offline_access, User.Read.
+- Opt-in discovery scopes (People.Read, User.ReadBasic.All) are requested only
+  for accounts the user explicitly enables — see Shared mailboxes below.
 - Unverified publisher for now: personal MSAs can consent; org tenants may
   require admin consent (John is admin on the target work tenant). Publisher
   verification (MPN + example.com domain verification) is a future task.
+
+## Shared mailboxes
+
+A shared mailbox is a mailbox row under the account whose token opens it. That
+is ownership, not merely grouping: lose the account and the shared mailbox
+becomes unreachable, so auth is always performed as the owning account while the
+request addresses the shared mailbox.
+
+- The sync engine addresses `/users/{upn}` throughout rather than `/me`. For the
+  signed-in user's own mailbox the two are the same resource, so there is no
+  special case and no second code path. (The Graph SDK generates distinct
+  response types per route, but both derive from `BaseDeltaFunctionResponse`,
+  so only the `Value` property differs.)
+- Each mailbox keeps its own database under its own key. Two accounts may both
+  reach one shared mailbox; each holds a separate copy, so the file name carries
+  the owning account (`{account}--{mailbox}.db`) to keep them distinct.
+- The folder tree groups by account. An account with only its own mailbox stays
+  flat — folders hang straight off it — and a mailbox level appears only when
+  there is more than one to tell apart, so adding a shared mailbox somewhere does
+  not add nesting everywhere.
+
+### Discovery is opt-in, per account
+
+Graph has no "list the mailboxes I can open" endpoint, so discovery triangulates:
+the relevance graph (People.Read) surfaces mailboxes already in use, which is
+what Outlook automapping produces, and a directory search (User.ReadBasic.All)
+covers mailboxes the user holds rights on but has never mailed. Measured against
+the real tenants: without these scopes every automatic route returns 403, and
+consumer accounts have no directory at all (`memberOf` 404s), so shared mailboxes
+are a work/school-tenant feature only.
+
+Both scopes are therefore **off by default and enabled per account**, because
+requesting them for every account would force a fresh consent prompt on personal
+accounts that can never use the feature — and, more subtly, asking for scopes
+that were not granted defeats the MSAL token cache, redeeming the refresh token
+on every call until the service throttles. `accounts.discovery_enabled` records
+what was actually *granted*, read back from the token rather than assumed from
+the request, since a tenant can consent to part of one.
+
+Discovery only ever proposes. Every candidate is confirmed by opening its inbox
+before it can be added, and that call is the same permission check Exchange
+applies to the user in OWA — so the app can never read mail its user could not
+read themselves. Typed-address entry works with no discovery scopes at all.
 
 ## Threading
 

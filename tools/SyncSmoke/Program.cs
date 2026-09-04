@@ -11,6 +11,8 @@ using Mail.Sync.Auth;
 using Mail.Sync.Graph;
 using Microsoft.Data.Sqlite;
 using Microsoft.Graph;
+using Microsoft.Graph.Models;
+using Microsoft.Graph.Models.ODataErrors;
 using Microsoft.Identity.Client;
 using Microsoft.Kiota.Abstractions.Authentication;
 
@@ -76,6 +78,107 @@ if (args.Contains("junk", StringComparer.OrdinalIgnoreCase))
         }
     }
     return;
+}
+
+if (args.Contains("registry", StringComparer.OrdinalIgnoreCase))
+{
+    foreach (var entry in MailboxRegistry.List(appDb))
+        Console.WriteLine(
+            $"  [{entry.Kind,-7}] {entry.Upn,-34} account={entry.AccountUpn,-30} " +
+            $"discovery={(entry.DiscoveryEnabled ? "on" : "off")}  {entry.DbPath}");
+    return;
+}
+
+if (args.Contains("shared", StringComparer.OrdinalIgnoreCase))
+{
+    // Graph has no "list the mailboxes I can open" endpoint, so discovery has to
+    // triangulate. Try each candidate route and report exactly what each one
+    // yields, so the UI picker can be built on whichever actually works here.
+    var sharedAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    foreach (var acct in await sharedAuth.GetAccountsAsync())
+    {
+        var tok = await sharedAuth.AcquireSilentAsync(acct);
+        if (tok is null) { Console.WriteLine($"{acct.Username}: needs interactive sign-in"); continue; }
+        Console.WriteLine($"=== {acct.Username} ===");
+        Console.WriteLine($"    granted scopes: {string.Join(" ", tok.Scopes)}");
+        var g = new GraphServiceClient(
+            new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(sharedAuth, tok)));
+
+        // 1. Group mailboxes (Microsoft 365 groups the user belongs to).
+        try
+        {
+            var groups = await g.Me.MemberOf.GetAsync(rc => rc.QueryParameters.Top = 50);
+            var mailEnabled = (groups?.Value ?? []).OfType<Group>()
+                .Where(x => x.MailEnabled == true && x.Mail is not null).ToList();
+            Console.WriteLine($"  [memberOf] {mailEnabled.Count} mail-enabled group(s)");
+            foreach (var x in mailEnabled.Take(20))
+                Console.WriteLine($"      {x.Mail}  ({x.DisplayName})");
+        }
+        catch (Exception ex) { Console.WriteLine($"  [memberOf] failed: {Short(ex)}"); }
+
+        // 2. Directory users with a mailbox — a shared mailbox is a user object
+        //    with no licence. Only useful if the tenant allows directory reads.
+        try
+        {
+            var users = await g.Users.GetAsync(rc =>
+            {
+                rc.QueryParameters.Select = ["displayName", "mail", "userPrincipalName", "userType"];
+                rc.QueryParameters.Filter = "mail ne null";
+                rc.QueryParameters.Top = 25;
+                rc.Headers.Add("ConsistencyLevel", "eventual");
+            });
+            Console.WriteLine($"  [users] {(users?.Value?.Count ?? 0)} directory user(s) with mail (first 25)");
+            foreach (var u in (users?.Value ?? []).Take(25))
+                Console.WriteLine($"      {u.Mail}  ({u.DisplayName}) type={u.UserType}");
+        }
+        catch (Exception ex) { Console.WriteLine($"  [users] failed: {Short(ex)}"); }
+
+        // 3. Mailbox settings / delegate hints. Automapped mailboxes are the ones
+        //    Outlook opens without being asked, so if any route lists them this
+        //    is where it shows up.
+        try
+        {
+            var people = await g.Me.People.GetAsync(rc =>
+            {
+                rc.QueryParameters.Top = 25;
+                rc.QueryParameters.Select = ["displayName", "scoredEmailAddresses", "personType"];
+            });
+            var mailboxes = (people?.Value ?? [])
+                .Where(x => x.PersonType?.Subclass is "OrganizationUser" or "SharedMailbox" or "Group")
+                .ToList();
+            Console.WriteLine($"  [people] {mailboxes.Count} org/shared entries of {(people?.Value?.Count ?? 0)}");
+            foreach (var x in mailboxes.Take(25))
+                Console.WriteLine($"      {x.ScoredEmailAddresses?.FirstOrDefault()?.Address}  ({x.DisplayName}) sub={x.PersonType?.Subclass}");
+        }
+        catch (Exception ex) { Console.WriteLine($"  [people] failed: {Short(ex)}"); }
+
+        // 4. findRooms/findMeetingTimes are calendar-only; the closest mail
+        //    equivalent is the mailbox settings resource, which at least proves
+        //    whether we can read another mailbox's configuration.
+        try
+        {
+            var settings = await g.Me.MailboxSettings.GetAsync();
+            Console.WriteLine($"  [settings] tz={settings?.TimeZone} lang={settings?.Language?.Locale}");
+        }
+        catch (Exception ex) { Console.WriteLine($"  [settings] failed: {Short(ex)}"); }
+
+        // 5. Direct access test against any explicitly named candidates: the
+        //    only conclusive check, since permission is per-mailbox.
+        foreach (var candidate in args.SkipWhile(a =>
+                     !a.Equals("shared", StringComparison.OrdinalIgnoreCase)).Skip(1))
+        {
+            try
+            {
+                var inbox = await g.Users[candidate].MailFolders["inbox"].GetAsync();
+                Console.WriteLine($"  [open] {candidate}: OK — inbox {inbox?.TotalItemCount:N0} items, {inbox?.UnreadItemCount:N0} unread");
+            }
+            catch (Exception ex) { Console.WriteLine($"  [open] {candidate}: {Short(ex)}"); }
+        }
+    }
+    return;
+
+    static string Short(Exception ex) =>
+        ex is ODataError o ? $"{o.ResponseStatusCode} {o.Error?.Code}: {o.Error?.Message}" : ex.Message;
 }
 
 if (args.Contains("probe", StringComparer.OrdinalIgnoreCase))

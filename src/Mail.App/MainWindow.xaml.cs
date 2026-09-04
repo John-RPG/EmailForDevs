@@ -42,6 +42,20 @@ public partial class MainWindow : Window
     sealed record MailboxHandle(
         string Upn, string DbPath, byte[] Dek, int WindowMonths, string Policy, SqliteConnection Db)
     {
+        /// <summary>Registry row id, for config edits and removal.</summary>
+        public long Id { get; init; }
+
+        /// <summary>
+        /// The signed-in account whose token opens this mailbox. For a shared
+        /// mailbox this is somebody else's address — which is precisely why it
+        /// is tracked: it decides who we authenticate as to reach it.
+        /// </summary>
+        public string AccountUpn { get; init; } = "";
+
+        public string Kind { get; init; } = "primary";
+        public bool IsShared => Kind != "primary";
+        public string DisplayName { get; init; } = "";
+
         public bool IsFullMirror => Policy == "MirrorServer" || WindowMonths <= 0;
         public string ScopeText => IsFullMirror ? "full mirror" : $"scoped: last {WindowMonths} month(s)";
         public DateTimeOffset? Since =>
@@ -172,24 +186,7 @@ public partial class MainWindow : Window
             var masterKey = keyStore.Unlock();
             _appDb = AppDatabase.Open(Path.Combine(_scratchRoot, "profile", "app.db"), masterKey);
 
-            using var cmd = _appDb.CreateCommand();
-            cmd.CommandText = """
-                SELECT upn, db_path, dek, coalesce(sync_window_months, 0),
-                       coalesce(sync_policy, 'MirrorServer')
-                FROM mailboxes WHERE enabled = 1 ORDER BY position, id;
-                """;
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                var upn = reader.GetString(0);
-                var dbPath = reader.GetString(1);
-                if (!Path.IsPathRooted(dbPath))
-                    dbPath = Path.Combine(repoRoot, dbPath);
-                var dek = (byte[])reader.GetValue(2);
-                _mailboxes.Add(new MailboxHandle(
-                    upn, dbPath, dek, reader.GetInt32(3), reader.GetString(4),
-                    MailboxDatabase.Open(dbPath, dek)));
-            }
+            LoadMailboxHandles(repoRoot);
             LoadFavourites();
             BuildTree();
             StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
@@ -269,13 +266,37 @@ public partial class MainWindow : Window
         _favouriteNodes.Clear();
         FolderNodeViewModel? inboxNode = null;
 
-        foreach (var mailbox in _mailboxes)
+        // Group by the account whose credentials reach each mailbox. An account
+        // with only its own mailbox stays flat — folders hang straight off the
+        // account — and a mailbox level appears only once there is more than one
+        // to tell apart, so adding a shared mailbox does not add a level of
+        // nesting to every other account.
+        foreach (var group in _mailboxes.GroupBy(m => m.AccountUpn, StringComparer.OrdinalIgnoreCase))
         {
-            var root = new FolderNodeViewModel
+            var primary = group.FirstOrDefault(m => !m.IsShared) ?? group.First();
+            var accountRoot = new FolderNodeViewModel
             {
-                Name = $"{mailbox.Upn}  [{mailbox.ScopeText}]",
+                Name = $"{group.Key}  [{primary.ScopeText}]",
                 IsExpanded = true,
+                IsAccountRoot = true,
             };
+            FolderTree.Items.Add(accountRoot);
+            var nested = group.Count() > 1;
+
+        foreach (var mailbox in group)
+        {
+            var root = nested
+                ? new FolderNodeViewModel
+                {
+                    Name = mailbox.IsShared
+                        ? $"{mailbox.DisplayName} ({mailbox.Upn})"
+                        : "This mailbox",
+                    IsExpanded = true,
+                    IsMailboxRoot = true,
+                    Mailbox = mailbox,
+                }
+                : accountRoot;
+            if (nested) accountRoot.Children.Add(root);
 
             var rows = QueryFolders(mailbox);
             var localCounts = QueryLocalCounts(mailbox);
@@ -311,8 +332,6 @@ public partial class MainWindow : Window
                     : root.Children;
                 parent.Add(nodes[row.Id]);
             }
-            FolderTree.Items.Add(root);
-
             // Favourites live in their own control above the folders, each row
             // labelled with its account so identical folder names stay distinct.
             foreach (var favouriteId in FavouritesFor(mailbox.Upn))
@@ -336,6 +355,7 @@ public partial class MainWindow : Window
                 FavouritesTree.Items.Add(shortcut);
                 _favouriteNodes[(mailbox.Upn, source.FolderId)] = shortcut;
             }
+        }
         }
 
         var hasFavourites = FavouritesTree.Items.Count > 0;
@@ -926,35 +946,51 @@ public partial class MainWindow : Window
         var auth = new GraphAuthenticator(
             Path.Combine(_scratchRoot!, "msal.cache"),
             () => new WindowInteropHelper(this).Handle);
+        var accountUpn = mailbox.AccountUpn.Length > 0 ? mailbox.AccountUpn : mailbox.Upn;
         var accounts = await auth.GetAccountsAsync();
         var account = accounts.FirstOrDefault(a =>
-            string.Equals(a.Username, mailbox.Upn, StringComparison.OrdinalIgnoreCase));
+            string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
         var result = account is null ? null : await auth.AcquireSilentAsync(account);
-        result ??= await auth.SignInInteractiveAsync(mailbox.Upn);
+        result ??= await auth.SignInInteractiveAsync(accountUpn);
         return result.AccessToken;
     }
 
-    async Task<GraphServiceClient> GetGraphAsync(MailboxHandle mailbox)
+    async Task<GraphServiceClient> GetGraphAsync(MailboxHandle mailbox) =>
+        await GetGraphForAccountAsync(
+            mailbox.AccountUpn.Length > 0 ? mailbox.AccountUpn : mailbox.Upn);
+
+    /// <summary>
+    /// A Graph client authenticated as the given signed-in account. Shared
+    /// mailboxes have no credentials of their own, so they are reached with the
+    /// token of the account that holds rights on them — which is also why the
+    /// cache is keyed by account rather than by mailbox.
+    /// </summary>
+    async Task<GraphServiceClient> GetGraphForAccountAsync(string accountUpn)
     {
-        if (_graphClients.TryGetValue(mailbox.Upn, out var cached))
+        if (_graphClients.TryGetValue(accountUpn, out var cached))
             return cached;
         var auth = new GraphAuthenticator(
             Path.Combine(_scratchRoot!, "msal.cache"),
             () => new WindowInteropHelper(this).Handle);
+        // Ask for exactly the scopes this account consented to: requesting more
+        // than was granted cannot be satisfied from cache, and would drag every
+        // account into a fresh prompt for a feature only some of them can use.
+        var discovery = MailboxRegistry.IsDiscoveryEnabled(_appDb!, accountUpn);
+        var scopes = GraphAuthenticator.ScopesFor(discovery);
         var accounts = await auth.GetAccountsAsync();
         var account = accounts.FirstOrDefault(a =>
-            string.Equals(a.Username, mailbox.Upn, StringComparison.OrdinalIgnoreCase));
-        var token = account is null ? null : await auth.AcquireSilentAsync(account);
+            string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
+        var token = account is null ? null : await auth.AcquireSilentAsync(account, scopes);
         if (token is not null)
-            Log(LogLevel.Debug, $"Silent token acquired for {mailbox.Upn}.");
+            Log(LogLevel.Debug, $"Silent token acquired for {accountUpn}.");
         else
         {
-            Log($"Interactive sign-in required for {mailbox.Upn}…");
-            token = await auth.SignInInteractiveAsync(mailbox.Upn);
+            Log($"Interactive sign-in required for {accountUpn}…");
+            token = await auth.SignInInteractiveAsync(accountUpn, withDiscovery: discovery);
         }
         var client = new GraphServiceClient(
             new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, token)));
-        _graphClients[mailbox.Upn] = client;
+        _graphClients[accountUpn] = client;
         return client;
     }
 
@@ -1357,7 +1393,14 @@ public partial class MainWindow : Window
     {
         if (_appDb is null || _scratchRoot is null)
             return;
-        var window = new AccountsWindow(_appDb, _scratchRoot) { Owner = this };
+        var window = new AccountsWindow(_appDb, _scratchRoot)
+        {
+            Owner = this,
+            // The picker authenticates as an existing account; the token cache
+            // and the handle needed for interactive sign-in both live here.
+            GraphForAccount = GetGraphForAccountAsync,
+            SignInWithDiscovery = SignInWithDiscoveryAsync,
+        };
         window.ShowDialog();
         if (!window.ChangesApplied)
             return;
@@ -1370,32 +1413,63 @@ public partial class MainWindow : Window
         StartSync();
     }
 
+    /// <summary>
+    /// Re-signs an account in asking for the discovery scopes, and reports what
+    /// was actually granted. A tenant can approve part of a request, so the
+    /// result is read back from the token rather than assumed from the ask.
+    /// </summary>
+    async Task<bool> SignInWithDiscoveryAsync(string accountUpn)
+    {
+        var auth = new GraphAuthenticator(
+            Path.Combine(_scratchRoot!, "msal.cache"),
+            () => new WindowInteropHelper(this).Handle);
+        var result = await auth.SignInInteractiveAsync(accountUpn, withDiscovery: true);
+
+        var granted = GraphAuthenticator.DiscoveryScopes.All(scope =>
+            result.Scopes.Any(s => s.EndsWith(
+                scope[(scope.LastIndexOf('/') + 1)..], StringComparison.OrdinalIgnoreCase)));
+
+        // The cached client holds a token without the new scopes; drop it so the
+        // next call picks up the wider one.
+        _graphClients.Remove(accountUpn);
+        Log(granted
+            ? $"Discovery scopes granted for {accountUpn}."
+            : $"Discovery scopes were not granted for {accountUpn}.");
+        return granted;
+    }
+
     /// <summary>Re-reads the mailbox registry (after config changes) and rebuilds the tree.</summary>
     void ReloadMailboxes()
     {
         if (_appDb is null || _scratchRoot is null)
             return;
-        var repoRoot = Path.GetDirectoryName(_scratchRoot)!;
-        using var cmd = _appDb.CreateCommand();
-        cmd.CommandText = """
-            SELECT upn, db_path, dek, coalesce(sync_window_months, 0),
-                   coalesce(sync_policy, 'MirrorServer')
-            FROM mailboxes WHERE enabled = 1 ORDER BY position, id;
-            """;
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
-        {
-            var upn = reader.GetString(0);
-            var dbPath = reader.GetString(1);
-            if (!Path.IsPathRooted(dbPath))
-                dbPath = Path.Combine(repoRoot, dbPath);
-            var dek = (byte[])reader.GetValue(2);
-            _mailboxes.Add(new MailboxHandle(
-                upn, dbPath, dek, reader.GetInt32(3), reader.GetString(4),
-                MailboxDatabase.Open(dbPath, dek)));
-        }
+        LoadMailboxHandles(Path.GetDirectoryName(_scratchRoot)!);
         BuildTree();
         StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
+    }
+
+    /// <summary>
+    /// Fills <see cref="_mailboxes"/> from the registry. Startup and reload share
+    /// this: when they were separate queries the reload path silently dropped the
+    /// owning account, which a shared mailbox needs in order to authenticate.
+    /// </summary>
+    void LoadMailboxHandles(string repoRoot)
+    {
+        foreach (var entry in MailboxRegistry.List(_appDb!, enabledOnly: true))
+        {
+            var dbPath = Path.IsPathRooted(entry.DbPath)
+                ? entry.DbPath
+                : Path.Combine(repoRoot, entry.DbPath);
+            _mailboxes.Add(new MailboxHandle(
+                entry.Upn, dbPath, entry.Dek, entry.WindowMonths, entry.Policy,
+                MailboxDatabase.Open(dbPath, entry.Dek))
+            {
+                Id = entry.Id,
+                AccountUpn = entry.AccountUpn,
+                Kind = entry.Kind,
+                DisplayName = entry.DisplayName,
+            });
+        }
     }
 
     async void StartSync()
@@ -1504,7 +1578,8 @@ public partial class MainWindow : Window
                 });
 
                 var sync = new GraphMailboxSync(
-                    graph, () => MailboxDatabase.Open(mailbox.DbPath, mailbox.Dek), OnProgress);
+                    graph, () => MailboxDatabase.Open(mailbox.DbPath, mailbox.Dek), OnProgress,
+                    mailboxAddress: mailbox.Upn);
                 // Task.Run keeps the engine (and its await continuations — page
                 // classification, MIME parsing) off the UI dispatcher entirely.
                 var stats = await Task.Run(() => sync.SyncAsync(since));

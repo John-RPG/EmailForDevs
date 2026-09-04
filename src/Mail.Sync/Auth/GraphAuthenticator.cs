@@ -27,6 +27,28 @@ public sealed class GraphAuthenticator
         "https://graph.microsoft.com/User.Read",
     ];
 
+    /// <summary>
+    /// Opt-in extras that let the app *find* other mailboxes: People.Read surfaces
+    /// ones already in use (which is what Outlook automapping produces), and
+    /// User.ReadBasic.All allows a directory search for one the user has rights to
+    /// but has never mailed.
+    ///
+    /// Neither grants access to mail. Opening any mailbox still goes through the
+    /// Exchange permission the signed-in user holds, so the app can never read
+    /// mail its user could not read in OWA. They are separated from
+    /// <see cref="MailScopes"/> because they are useless on consumer accounts
+    /// (which have no directory) and would otherwise force a fresh consent prompt
+    /// on every account for a feature only work tenants can use.
+    /// </summary>
+    public static readonly string[] DiscoveryScopes =
+    [
+        "https://graph.microsoft.com/People.Read",
+        "https://graph.microsoft.com/User.ReadBasic.All",
+    ];
+
+    public static string[] ScopesFor(bool withDiscovery) =>
+        withDiscovery ? [.. MailScopes, .. DiscoveryScopes] : MailScopes;
+
     readonly IPublicClientApplication _app;
 
     /// <summary>
@@ -87,9 +109,10 @@ public sealed class GraphAuthenticator
     /// already knows one.
     /// </summary>
     public Task<AuthenticationResult> SignInInteractiveAsync(
-        string? loginHint = null, CancellationToken ct = default)
+        string? loginHint = null, CancellationToken ct = default,
+        bool withDiscovery = false)
     {
-        var request = _app.AcquireTokenInteractive(MailScopes)
+        var request = _app.AcquireTokenInteractive(ScopesFor(withDiscovery))
             .WithUseEmbeddedWebView(false);
         request = loginHint is not null
             ? request.WithLoginHint(loginHint)

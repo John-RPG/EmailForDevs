@@ -23,6 +23,7 @@
                 <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled}" Width="60"/>
                 <DataGridTextColumn Header="Mailbox (UPN)" Binding="{Binding Upn}" Width="240" IsReadOnly="True"/>
                 <DataGridTextColumn Header="Kind" Binding="{Binding Kind}" Width="70" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Discovery" Binding="{Binding Discovery}" Width="75" IsReadOnly="True"/>
                 <DataGridComboBoxColumn Header="Sync policy" Width="120"
                                         ItemsSource="{StaticResource Policies}"
                                         SelectedItemBinding="{Binding Policy}"/>
@@ -37,6 +38,14 @@
             <TextBlock x:Name="StatusLabel" VerticalAlignment="Center" Foreground="Gray"/>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="Add account…" Padding="10,3" Margin="0,0,8,0" Click="OnAddAccount"/>
+                <Button Content="Allow discovery…" Padding="10,3" Margin="0,0,8,0"
+                        Click="OnEnableDiscovery"
+                        ToolTip="Re-consent this account so shared mailboxes can be listed and searched by name. Does not grant access to mail."/>
+                <Button Content="Add shared mailbox…" Padding="10,3" Margin="0,0,8,0"
+                        Click="OnAddShared"
+                        ToolTip="Mirror a mailbox belonging to someone else that you have been granted access to."/>
+                <Button Content="Remove shared" Padding="10,3" Margin="0,0,8,0" Click="OnRemoveShared"
+                        ToolTip="Forgets the selected shared mailbox and deletes its local database."/>
                 <Button Content="Reset sync state" Padding="10,3" Margin="0,0,8,0" Click="OnResetSync"
                         ToolTip="Clears the selected mailbox's delta checkpoints; next sync re-lists (stored mail is not re-downloaded)."/>
                 <Button Content="Save" Padding="14,3" Margin="0,0,8,0" Click="OnSave"/>

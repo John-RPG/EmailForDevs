@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Interop;
 using Mail.Storage.Database;
 using Mail.Sync.Auth;
+using Microsoft.Graph;
 using Microsoft.Identity.Client;
 using Microsoft.Data.Sqlite;
 
@@ -35,6 +36,9 @@ public partial class AccountsWindow : Window
         public string OriginalMonths { get; init; } = "";
         public byte[] Dek { get; init; } = [];
         public string ResolvedDbPath { get; init; } = "";
+
+        /// <summary>Blank for shared mailboxes: discovery belongs to the account.</summary>
+        public string Discovery { get; init; } = "";
     }
 
     readonly SqliteConnection _appDb;
@@ -43,6 +47,19 @@ public partial class AccountsWindow : Window
     List<MailboxConfig> _rows = [];
 
     public bool ChangesApplied { get; private set; }
+
+    /// <summary>
+    /// Supplies a Graph client for a given signed-in account. Set by the main
+    /// window, which owns the token cache; without it the shared-mailbox picker
+    /// has no way to authenticate.
+    /// </summary>
+    public Func<string, Task<GraphServiceClient>>? GraphForAccount { get; set; }
+
+    /// <summary>
+    /// Re-signs an account in, requesting the discovery scopes. Returns whether
+    /// they were actually granted.
+    /// </summary>
+    public Func<string, Task<bool>>? SignInWithDiscovery { get; set; }
 
     public AccountsWindow(SqliteConnection appDb, string scratchRoot)
     {
@@ -56,37 +73,32 @@ public partial class AccountsWindow : Window
     void LoadRows()
     {
         _rows = [];
-        using var cmd = _appDb.CreateCommand();
-        cmd.CommandText = """
-            SELECT id, upn, kind, coalesce(sync_policy,'MirrorServer'),
-                   sync_window_months, enabled, db_path, dek
-            FROM mailboxes ORDER BY position, id;
-            """;
-        using var reader = cmd.ExecuteReader();
-        while (reader.Read())
+        foreach (var entry in MailboxRegistry.List(_appDb))
         {
-            var dbPath = reader.GetString(6);
-            var resolved = Path.IsPathRooted(dbPath) ? dbPath : Path.Combine(_repoRoot, dbPath);
-            var dek = (byte[])reader.GetValue(7);
-            var months = reader.IsDBNull(4) ? "" : reader.GetInt32(4).ToString(CultureInfo.InvariantCulture);
-            var policy = reader.GetString(3);
-            var enabled = reader.GetInt64(5) != 0;
+            var resolved = Path.IsPathRooted(entry.DbPath)
+                ? entry.DbPath
+                : Path.Combine(_repoRoot, entry.DbPath);
+            var months = entry.WindowMonths > 0
+                ? entry.WindowMonths.ToString(CultureInfo.InvariantCulture)
+                : "";
             _rows.Add(new MailboxConfig
             {
-                Id = reader.GetInt64(0),
-                Enabled = enabled,
-                OriginalEnabled = enabled,
-                Upn = reader.GetString(1),
-                Kind = reader.GetString(2),
-                Policy = policy,
-                OriginalPolicy = policy,
+                Id = entry.Id,
+                Enabled = entry.Enabled,
+                OriginalEnabled = entry.Enabled,
+                Upn = entry.Upn,
+                Kind = entry.Kind,
+                Policy = entry.Policy,
+                OriginalPolicy = entry.Policy,
                 MonthsText = months,
                 OriginalMonths = months,
-                Messages = CountMessages(resolved, dek),
+                Messages = CountMessages(resolved, entry.Dek),
                 DbSize = FormatSize(resolved),
-                DbPath = dbPath,
+                DbPath = entry.DbPath,
                 ResolvedDbPath = resolved,
-                Dek = dek,
+                Dek = entry.Dek,
+                Discovery = entry.Kind != "primary" ? ""
+                    : entry.DiscoveryEnabled ? "on" : "off",
             });
         }
         MailboxGrid.ItemsSource = _rows;
@@ -294,6 +306,120 @@ public partial class AccountsWindow : Window
         ex.Message.Contains("AADSTS90094", StringComparison.OrdinalIgnoreCase) ||
         ex.Message.Contains("admin", StringComparison.OrdinalIgnoreCase) &&
             ex.Message.Contains("consent", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Opens the shared-mailbox picker. It needs a Graph client per account,
+    /// which the main window owns (it holds the token cache and the window
+    /// handle for interactive sign-in), so that is passed in as a factory.
+    /// </summary>
+    void OnAddShared(object sender, RoutedEventArgs e)
+    {
+        if (GraphForAccount is null)
+        {
+            StatusLabel.Text = "Shared mailboxes need an authenticated account; add an account first.";
+            return;
+        }
+        var picker = new SharedMailboxWindow(_appDb, _repoRoot, GraphForAccount) { Owner = this };
+        picker.ShowDialog();
+        if (picker.MailboxesAdded)
+        {
+            ChangesApplied = true;
+            LoadRows();
+        }
+    }
+
+    void OnRemoveShared(object sender, RoutedEventArgs e)
+    {
+        if (MailboxGrid.SelectedItem is not MailboxConfig row)
+        {
+            StatusLabel.Text = "Select a shared mailbox to remove.";
+            return;
+        }
+        if (row.Kind != "shared")
+        {
+            StatusLabel.Text = "Only shared mailboxes can be removed here — a primary mailbox is its account.";
+            return;
+        }
+        // Deleting the database discards mail that only exists locally if the
+        // server copy has since been purged, so make that explicit.
+        var confirm = MessageBox.Show(
+            this,
+            $"Remove {row.Upn} and delete its local database ({row.DbSize})?\n\n" +
+            "The mailbox on the server is not touched; only this machine's copy is deleted.",
+            "eeeMail - remove shared mailbox",
+            MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.OK) return;
+
+        if (MailboxRegistry.RemoveShared(_appDb, row.Id, _repoRoot))
+        {
+            ChangesApplied = true;
+            StatusLabel.Text = $"Removed {row.Upn}.";
+            LoadRows();
+        }
+        else
+        {
+            StatusLabel.Text = $"Could not remove {row.Upn}.";
+        }
+    }
+
+    /// <summary>
+    /// Turns mailbox discovery on for an account, which needs consent for two
+    /// extra read scopes. Kept opt-in and per-account: consumer accounts have no
+    /// directory to search, so for them the prompt would buy nothing.
+    /// </summary>
+    async void OnEnableDiscovery(object sender, RoutedEventArgs e)
+    {
+        if (MailboxGrid.SelectedItem is not MailboxConfig row)
+        {
+            StatusLabel.Text = "Select an account to enable discovery for.";
+            return;
+        }
+        if (row.Kind != "primary")
+        {
+            StatusLabel.Text = "Discovery is granted to an account, not to a shared mailbox.";
+            return;
+        }
+        if (SignInWithDiscovery is null) return;
+
+        var confirm = MessageBox.Show(
+            this,
+            $"Sign in to {row.Upn} again to allow eeeMail to look up mailboxes?\n\n" +
+            "This grants two read-only directory permissions (People.Read and " +
+            "User.ReadBasic.All) so shared mailboxes can be listed and searched " +
+            "by name.\n\n" +
+            "It does not grant access to anyone's mail: opening a mailbox still " +
+            "depends on the permissions you hold in Exchange.",
+            "eeeMail - allow mailbox discovery",
+            MessageBoxButton.OKCancel, MessageBoxImage.Question);
+        if (confirm != MessageBoxResult.OK) return;
+
+        StatusLabel.Text = $"Signing in to {row.Upn}…";
+        try
+        {
+            var granted = await SignInWithDiscovery(row.Upn);
+            // Trust what came back, not what was asked for: a tenant can consent
+            // to part of a request, and claiming discovery works when it does not
+            // would just produce empty lists with no explanation.
+            if (granted)
+            {
+                MailboxRegistry.SetDiscoveryEnabled(_appDb, row.Upn, true);
+                ChangesApplied = true;
+                StatusLabel.Text = $"Discovery enabled for {row.Upn}.";
+                LoadRows();
+            }
+            else
+            {
+                StatusLabel.Text =
+                    $"{row.Upn}: the directory permissions were not granted — " +
+                    "an administrator may need to approve them. You can still add " +
+                    "shared mailboxes by typing their address.";
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusLabel.Text = $"Sign-in failed: {ex.Message}";
+        }
+    }
 
     void OnCloseClick(object sender, RoutedEventArgs e) => Close();
 }

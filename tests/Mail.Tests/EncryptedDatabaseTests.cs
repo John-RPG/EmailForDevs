@@ -74,7 +74,11 @@ public sealed class EncryptedDatabaseTests : IDisposable
         }
         using var reopened = AppDatabase.Open(path, key);
         Assert.Equal(1L, Scalar(reopened, "SELECT count(*) FROM mailboxes WHERE kind='shared';"));
-        Assert.Equal(1L, Scalar(reopened, "PRAGMA user_version;"));
+        // Assert migrations ran to the current head rather than a fixed number,
+        // so adding one does not fail this test for the wrong reason.
+        Assert.Equal((long)AppDatabase.SchemaVersion, Scalar(reopened, "PRAGMA user_version;"));
+        // V2: accounts carry the discovery opt-in.
+        Assert.Equal(0L, Scalar(reopened, "SELECT discovery_enabled FROM accounts WHERE upn='john@work.example';"));
     }
 
     [Fact]

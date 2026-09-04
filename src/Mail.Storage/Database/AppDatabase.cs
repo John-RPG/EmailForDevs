@@ -17,7 +17,17 @@ public static class AppDatabase
         return conn;
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2];
+
+    /// <summary>Schema version a freshly-migrated app.db reports.</summary>
+    public static int SchemaVersion => Migrations.Count;
+
+    const string V2 = """
+        -- Whether this account was consented for mailbox discovery. Off by
+        -- default: the extra scopes are useless on consumer accounts, and
+        -- turning them on costs a fresh consent prompt.
+        ALTER TABLE accounts ADD COLUMN discovery_enabled INTEGER NOT NULL DEFAULT 0;
+        """;
 
     const string V1 = """
         CREATE TABLE identities(

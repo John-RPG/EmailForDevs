@@ -24,6 +24,15 @@ public sealed class FolderNodeViewModel : INotifyPropertyChanged
     public bool IsFavouriteEntry { get; init; }
     public bool IsGroupHeader { get; init; }
 
+    /// <summary>Account row: groups the mailboxes one sign-in can reach.</summary>
+    public bool IsAccountRoot { get; init; }
+
+    /// <summary>Mailbox row, shown only when an account has more than one.</summary>
+    public bool IsMailboxRoot { get; init; }
+
+    /// <summary>True for rows that group rather than hold mail.</summary>
+    public bool IsContainer => IsAccountRoot || IsMailboxRoot || IsGroupHeader;
+
     string _name = "";
     public string Name
     {
@@ -98,7 +107,7 @@ public sealed class FolderNodeViewModel : INotifyPropertyChanged
     {
         get
         {
-            if (IsGroupHeader || Mailbox is null) return Name;
+            if (IsContainer || Mailbox is null) return Name;
             var parts = new List<string> { Name };
             if (Totals.Length > 0)
                 parts.Add($"{Totals} messages held locally of the server total");
@@ -111,9 +120,13 @@ public sealed class FolderNodeViewModel : INotifyPropertyChanged
     }
 
     public string Icon => IsGroupHeader
-        ? "★"                               // star: favourites group
+        ? "★"                          // star: favourites group
+        : IsAccountRoot
+            ? "👤"                  // bust: account
+        : IsMailboxRoot
+            ? "📬"                  // mailbox: one mailbox within an account
         : Mailbox is null
-            ? "\U0001F464"                       // bust: mailbox root
+            ? "👤"
             : SpecialUse switch
             {
                 "inbox" => "\U0001F4E5",         // inbox tray

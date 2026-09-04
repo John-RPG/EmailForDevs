@@ -54,9 +54,15 @@ public sealed class SharedMailboxDiscovery(GraphServiceClient graph)
     /// possible. Passed in rather than fetched here because it needs a token for
     /// the Exchange audience, which only the shell can acquire.
     /// </param>
+    /// <param name="includeSuggestions">
+    /// Whether to consult the relevance graph. Off when the user did not grant
+    /// that capability: asking anyway would fail, and a silent failure would be
+    /// indistinguishable from having nothing to suggest.
+    /// </param>
     public async Task<IReadOnlyList<Candidate>> DiscoverAsync(
         string ownAddress,
         IEnumerable<AutodiscoverMailboxes.AlternateMailbox>? mapped = null,
+        bool includeSuggestions = true,
         CancellationToken ct = default)
     {
         var found = new Dictionary<string, Candidate>(StringComparer.OrdinalIgnoreCase);
@@ -72,6 +78,7 @@ public sealed class SharedMailboxDiscovery(GraphServiceClient graph)
 
         // Relevance graph next: mailboxes the user deals with, which may include
         // ones they can open but that were never automapped.
+        if (includeSuggestions)
         try
         {
             var people = await graph.Me.People.GetAsync(rc =>

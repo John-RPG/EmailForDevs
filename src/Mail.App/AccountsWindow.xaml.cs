@@ -60,7 +60,11 @@ public partial class AccountsWindow : Window
     /// Re-signs an account in, requesting the discovery scopes. Returns whether
     /// they were actually granted.
     /// </summary>
-    public Func<string, Task<bool>>? SignInWithDiscovery { get; set; }
+    /// <summary>
+    /// Signs an account in requesting a capability set, returning those actually
+    /// granted. Owned by the main window, which holds the token cache.
+    /// </summary>
+    public Func<string, IReadOnlyList<string>, Task<IReadOnlyList<string>>>? ApplyCapabilities { get; set; }
 
     /// <summary>
     /// Asks Exchange which mailboxes are mapped to an account. Owned by the main
@@ -105,8 +109,9 @@ public partial class AccountsWindow : Window
                 DbPath = entry.DbPath,
                 ResolvedDbPath = resolved,
                 Dek = entry.Dek,
-                Discovery = entry.Kind != "primary" ? ""
-                    : entry.DiscoveryEnabled ? "on" : "off",
+                Discovery = entry.Kind != "primary"
+                    ? ""
+                    : $"{entry.Capabilities.Count:N0} extra",
             });
         }
         MailboxGrid.ItemsSource = _rows;
@@ -374,78 +379,32 @@ public partial class AccountsWindow : Window
     }
 
     /// <summary>
-    /// Turns mailbox discovery on for an account, which needs consent for two
-    /// extra read scopes. Kept opt-in and per-account: consumer accounts have no
-    /// directory to search, so for them the prompt would buy nothing.
+    /// Opens the capability settings for the selected account: what the app may
+    /// do, what each permission costs, and what refusing one gives up.
     /// </summary>
-    async void OnEnableDiscovery(object sender, RoutedEventArgs e)
+    void OnCapabilities(object sender, RoutedEventArgs e)
     {
         if (MailboxGrid.SelectedItem is not MailboxConfig row)
         {
-            StatusLabel.Text = "Select an account to enable discovery for.";
+            StatusLabel.Text = "Select an account first.";
             return;
         }
         if (row.Kind != "primary")
         {
-            StatusLabel.Text = "Discovery is granted to an account, not to a shared mailbox.";
+            StatusLabel.Text = "Capabilities belong to an account, not to a shared mailbox.";
             return;
         }
-        if (SignInWithDiscovery is null) return;
 
-        var confirm = MessageBox.Show(
-            this,
-            $"Sign in to {row.Upn} again to allow eeeMail to look up mailboxes?\n\n" +
-            "This grants two read-only directory permissions (People.Read and " +
-            "User.ReadBasic.All) so shared mailboxes can be listed and searched " +
-            "by name.\n\n" +
-            "It does not grant access to anyone's mail: opening a mailbox still " +
-            "depends on the permissions you hold in Exchange.",
-            "eeeMail - allow mailbox discovery",
-            MessageBoxButton.OKCancel, MessageBoxImage.Question);
-        if (confirm != MessageBoxResult.OK) return;
-
-        StatusLabel.Text = $"Signing in to {row.Upn}…";
-        try
+        var window = new CapabilitiesWindow(_appDb)
         {
-            var granted = await SignInWithDiscovery(row.Upn);
-            // Trust what came back, not what was asked for: a tenant can consent
-            // to part of a request, and claiming discovery works when it does not
-            // would just produce empty lists with no explanation.
-            if (granted)
-            {
-                MailboxRegistry.SetDiscoveryEnabled(_appDb, row.Upn, true);
-                ChangesApplied = true;
-                StatusLabel.Text = $"Discovery enabled for {row.Upn}.";
-                LoadRows();
-            }
-            else
-            {
-                StatusLabel.Text =
-                    $"{row.Upn}: the directory permissions were not granted — " +
-                    "an administrator may need to approve them. You can still add " +
-                    "shared mailboxes by typing their address.";
-            }
-        }
-        catch (MsalServiceException ex) when (IsConsentRequired(ex))
+            Owner = this,
+            ApplyCapabilities = ApplyCapabilities,
+        };
+        window.ShowDialog();
+        if (window.ChangesApplied)
         {
-            StatusLabel.Text =
-                "This organisation requires an administrator to approve the lookup " +
-                "permissions. Approve the request, then click Allow discovery again.";
-        }
-        catch (MsalClientException ex) when (ex.ErrorCode == "authentication_canceled")
-        {
-            // MSAL reports "user canceled" whenever the browser closes without
-            // returning a token — including when it closed because the tenant
-            // demanded admin approval. Say what to do next rather than blaming
-            // the user for something they may not have done.
-            StatusLabel.Text =
-                "Sign-in did not complete. If you were asked for administrator " +
-                "approval, approve it and click Allow discovery again — no second " +
-                "sign-in is needed.";
-        }
-        catch (Exception ex)
-        {
-            StatusLabel.Text = $"Sign-in failed: {ex.Message}";
+            ChangesApplied = true;
+            LoadRows();
         }
     }
 

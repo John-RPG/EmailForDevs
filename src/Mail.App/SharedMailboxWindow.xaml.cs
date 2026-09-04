@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Mail.Storage.Database;
+using Mail.Sync.Auth;
 using Mail.Sync.Graph;
 using Microsoft.Data.Sqlite;
 using Microsoft.Graph;
@@ -98,7 +99,11 @@ public partial class SharedMailboxWindow : Window
             var mapped = _mapped is null ? [] : await _mapped(account);
             var graph = await _graphForAccount(account);
             var discovery = new SharedMailboxDiscovery(graph);
-            var found = await discovery.DiscoverAsync(account, mapped);
+            // Suggestions are a separate capability from Exchange's mapped list,
+            // so a user who granted one and refused the other gets exactly that.
+            var suggest = MailboxRegistry.HasCapability(
+                _appDb, account, AccountCapability.PeopleLookup.Id);
+            var found = await discovery.DiscoverAsync(account, mapped, includeSuggestions: suggest);
             foreach (var candidate in found)
                 _candidates.Add(new CandidateRow
                 {
@@ -121,9 +126,9 @@ public partial class SharedMailboxWindow : Window
                           ? $", plus {found.Count - mappedCount:N0} suggestion(s) to check."
                           : ". Select one and add it.")
                     : $"{found.Count:N0} suggestion(s) — none mapped, so check access before adding."
-                : MailboxRegistry.IsDiscoveryEnabled(_appDb, account)
+                : MailboxRegistry.HasCapability(_appDb, account, AccountCapability.MappedLookup.Id)
                     ? "Nothing found automatically — search the directory or type an address below."
-                    : "Automatic lookup is off for this account (Accounts → Allow discovery). " +
+                    : "Mailbox lookup is off for this account (Accounts → Capabilities). " +
                       "You can still add a mailbox by typing its address below.";
         }
         catch (Exception ex)
@@ -137,11 +142,11 @@ public partial class SharedMailboxWindow : Window
         if (e.Key != Key.Enter || SelectedAccount is not string account) return;
         var term = SearchBox.Text.Trim();
         if (term.Length == 0) { await DiscoverAsync(); return; }
-        if (!MailboxRegistry.IsDiscoveryEnabled(_appDb, account))
+        if (!MailboxRegistry.HasCapability(_appDb, account, AccountCapability.DirectorySearch.Id))
         {
             StatusLabel.Text =
-                "Directory search needs discovery enabled for this account " +
-                "(Accounts → Allow discovery). Type the mailbox address below instead.";
+                "Directory search is off for this account (Accounts → Capabilities → " +
+                "Search the company directory). Type the mailbox address below instead.";
             return;
         }
 

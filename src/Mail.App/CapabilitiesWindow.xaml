@@ -1,0 +1,106 @@
+<Window x:Class="Mail.App.CapabilitiesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Account capabilities" Height="620" Width="880" FontSize="12"
+        WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <Style x:Key="RiskChip" TargetType="Border">
+            <Setter Property="CornerRadius" Value="3"/>
+            <Setter Property="Padding" Value="5,1"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="8,0,0,0"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,10">
+            Each capability lists the permissions it costs and what you lose by refusing it.
+            Nothing here grants access to mail you could not already read yourself — Exchange
+            still decides that. Changes take effect after signing in again.
+        </TextBlock>
+
+        <DockPanel Grid.Row="1" Margin="0,0,0,8">
+            <TextBlock Text="Account:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+            <ComboBox x:Name="AccountCombo" Width="260" DockPanel.Dock="Left"
+                      SelectionChanged="OnAccountChanged"/>
+            <TextBlock x:Name="GrantedLabel" Margin="12,0,0,0" VerticalAlignment="Center"
+                       Foreground="Gray"/>
+        </DockPanel>
+
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
+                      BorderBrush="#DDD" BorderThickness="1" Padding="8">
+            <ItemsControl x:Name="CapabilityList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border BorderBrush="#EEE" BorderThickness="0,0,0,1" Padding="4,8">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <CheckBox Grid.Column="0" VerticalAlignment="Top" Margin="0,2,8,0"
+                                          IsChecked="{Binding Enabled}"
+                                          IsEnabled="{Binding CanToggle}"
+                                          Click="OnToggled"
+                                          Tag="{Binding Id}"/>
+
+                                <StackPanel Grid.Column="1">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                        <Border Style="{StaticResource RiskChip}"
+                                                Background="{Binding RiskBrush}"
+                                                Visibility="{Binding RiskVisibility}">
+                                            <TextBlock Text="{Binding RiskLabel}" Foreground="White"
+                                                       FontSize="10"/>
+                                        </Border>
+                                        <Border Style="{StaticResource RiskChip}" Background="#666"
+                                                Visibility="{Binding AdminVisibility}">
+                                            <TextBlock Text="admin consent" Foreground="White"
+                                                       FontSize="10"/>
+                                        </Border>
+                                        <Border Style="{StaticResource RiskChip}" Background="#1B7F3B"
+                                                Visibility="{Binding GrantedVisibility}">
+                                            <TextBlock Text="granted" Foreground="White" FontSize="10"/>
+                                        </Border>
+                                    </StackPanel>
+
+                                    <TextBlock Text="{Binding Summary}" TextWrapping="Wrap"
+                                               Margin="0,2,0,0"/>
+                                    <TextBlock Text="{Binding WithoutText}" TextWrapping="Wrap"
+                                               Foreground="Gray" Margin="0,2,0,0"/>
+                                    <TextBlock Text="{Binding ScopeText}" FontFamily="Consolas"
+                                               FontSize="11" Foreground="#555" Margin="0,2,0,0"
+                                               TextWrapping="Wrap"
+                                               Visibility="{Binding ScopeVisibility}"/>
+                                    <TextBlock Text="{Binding Warning}" TextWrapping="Wrap"
+                                               Foreground="#B00" Margin="0,3,0,0"
+                                               Visibility="{Binding WarningVisibility}"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right"
+                    Margin="0,8,0,0">
+            <Button Content="Apply and sign in" Padding="14,3" Margin="0,0,8,0"
+                    Click="OnApply"
+                    ToolTip="Requests the selected permissions. Only what the tenant actually grants is recorded."/>
+            <Button Content="Close" Padding="12,3" Click="OnClose"/>
+        </StackPanel>
+
+        <TextBlock x:Name="StatusLabel" Grid.Row="4" Margin="0,6,0,0"
+                   Foreground="Gray" TextWrapping="Wrap"/>
+    </Grid>
+</Window>

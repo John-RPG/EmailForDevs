@@ -80,6 +80,29 @@ if (args.Contains("junk", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Contains("mapped", StringComparer.OrdinalIgnoreCase))
+{
+    // Exercises the real AutodiscoverMailboxes parser (not the probe's regex),
+    // so the shipping code path is what gets verified.
+    var mapAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    using var mapHttp = new HttpClient();
+    var finder = new AutodiscoverMailboxes(mapHttp);
+    foreach (var acct in await mapAuth.GetAccountsAsync())
+    {
+        Console.WriteLine($"=== {acct.Username} ===");
+        AuthenticationResult? tok = null;
+        try { tok = await mapAuth.AcquireSilentAsync(acct, GraphAuthenticator.ExchangeScopes); }
+        catch (Exception ex) { Console.WriteLine($"  no Exchange token: {ex.Message.Split('.')[0]}"); }
+        if (tok is null) { Console.WriteLine("  (skipped)"); continue; }
+
+        var mapped = await finder.GetAlternateMailboxesAsync(acct.Username, tok.AccessToken);
+        Console.WriteLine($"  {mapped.Count:N0} mapped mailbox(es):");
+        foreach (var box in mapped)
+            Console.WriteLine($"    [{box.Type,-8}] {box.SmtpAddress,-40} {box.DisplayName}");
+    }
+    return;
+}
+
 if (args.Contains("autodiscover", StringComparer.OrdinalIgnoreCase))
 {
     // Outlook does not probe mailboxes to find out what it can open: it asks
@@ -163,7 +186,7 @@ if (args.Contains("registry", StringComparer.OrdinalIgnoreCase))
     foreach (var entry in MailboxRegistry.List(appDb))
         Console.WriteLine(
             $"  [{entry.Kind,-7}] {entry.Upn,-34} account={entry.AccountUpn,-30} " +
-            $"discovery={(entry.DiscoveryEnabled ? "on" : "off")}  {entry.DbPath}");
+            $"caps=[{string.Join(",", entry.Capabilities.OrderBy(c => c))}]  {entry.DbPath}");
     return;
 }
 

@@ -24,7 +24,7 @@
                 <DataGridCheckBoxColumn Header="Enabled" Binding="{Binding Enabled}" Width="60"/>
                 <DataGridTextColumn Header="Mailbox (UPN)" Binding="{Binding Upn}" Width="240" IsReadOnly="True"/>
                 <DataGridTextColumn Header="Kind" Binding="{Binding Kind}" Width="70" IsReadOnly="True"/>
-                <DataGridTextColumn Header="Discovery" Binding="{Binding Discovery}" Width="75" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Capabilities" Binding="{Binding Discovery}" Width="95" IsReadOnly="True"/>
                 <DataGridComboBoxColumn Header="Sync policy" Width="120"
                                         ItemsSource="{StaticResource Policies}"
                                         SelectedItemBinding="{Binding Policy}"/>
@@ -38,9 +38,9 @@
         <WrapPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right"
                    Margin="0,8,0,0">
             <Button Content="Add account…" Padding="10,3" Margin="0,0,8,4" Click="OnAddAccount"/>
-            <Button Content="Allow discovery…" Padding="10,3" Margin="0,0,8,4"
-                    Click="OnEnableDiscovery"
-                    ToolTip="Re-consent this account so shared mailboxes can be listed and searched by name. Does not grant access to mail."/>
+            <Button Content="Capabilities…" Padding="10,3" Margin="0,0,8,4"
+                    Click="OnCapabilities"
+                    ToolTip="Choose what this app may do with the selected account, and see what each permission costs."/>
             <Button Content="Add shared mailbox…" Padding="10,3" Margin="0,0,8,4"
                     Click="OnAddShared"
                     ToolTip="Mirror a mailbox belonging to someone else that you have been granted access to."/>

@@ -21,10 +21,11 @@ public static class MailboxRegistry
         string Policy, int WindowMonths)
     {
         /// <summary>
-        /// Whether the owning account was consented for mailbox discovery. Only
-        /// affects finding mailboxes; access to one is always Exchange's call.
+        /// Optional capabilities granted for the owning account. These affect
+        /// what can be *found*; access to any mailbox is always Exchange's call.
         /// </summary>
-        public bool DiscoveryEnabled { get; init; }
+        public IReadOnlySet<string> Capabilities { get; init; } =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -38,7 +39,9 @@ public static class MailboxRegistry
             SELECT m.id, m.account_id, coalesce(a.upn, a.display_name), m.upn,
                    coalesce(m.display_name, m.upn), m.kind, m.db_path, m.dek,
                    m.enabled, m.visible, coalesce(m.sync_policy,'MirrorServer'),
-                   coalesce(m.sync_window_months, 0), a.discovery_enabled
+                   coalesce(m.sync_window_months, 0),
+                   (SELECT group_concat(capability) FROM account_capabilities
+                    WHERE account_id = a.id)
             FROM mailboxes m
             JOIN accounts a ON a.id = m.account_id
             {(enabledOnly ? "WHERE m.enabled = 1" : "")}
@@ -53,33 +56,58 @@ public static class MailboxRegistry
                 (byte[])reader.GetValue(7), reader.GetInt64(8) != 0, reader.GetInt64(9) != 0,
                 reader.GetString(10), reader.GetInt32(11))
             {
-                DiscoveryEnabled = reader.GetInt64(12) != 0,
+                Capabilities = reader.IsDBNull(12)
+                    ? new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    : new HashSet<string>(
+                        reader.GetString(12).Split(',', StringSplitOptions.RemoveEmptyEntries),
+                        StringComparer.OrdinalIgnoreCase),
             });
         return result;
     }
 
     /// <summary>
-    /// Records that an account has been consented for discovery. Set only after a
-    /// sign-in actually returned the discovery scopes, so the flag reflects what
-    /// was granted rather than what was asked for.
+    /// The optional capabilities granted for an account. Recorded only after a
+    /// sign-in actually returned the scopes, so this reflects what was granted
+    /// rather than what was asked for.
     /// </summary>
-    public static void SetDiscoveryEnabled(SqliteConnection appDb, string accountUpn, bool enabled)
+    public static HashSet<string> GetCapabilities(SqliteConnection appDb, string accountUpn)
     {
         using var cmd = appDb.CreateCommand();
-        cmd.CommandText = "UPDATE accounts SET discovery_enabled = @e WHERE upn = @u;";
-        cmd.Parameters.AddWithValue("@e", enabled ? 1 : 0);
+        cmd.CommandText = """
+            SELECT c.capability FROM account_capabilities c
+            JOIN accounts a ON a.id = c.account_id
+            WHERE a.upn = @u;
+            """;
+        cmd.Parameters.AddWithValue("@u", accountUpn);
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) result.Add(reader.GetString(0));
+        return result;
+    }
+
+    /// <summary>Records one capability as granted, or removes it when refused.</summary>
+    public static void SetCapability(
+        SqliteConnection appDb, string accountUpn, string capability, bool granted)
+    {
+        using var cmd = appDb.CreateCommand();
+        cmd.CommandText = granted
+            ? """
+              INSERT OR REPLACE INTO account_capabilities(account_id, capability, granted_at)
+              SELECT id, @c, unixepoch() FROM accounts WHERE upn = @u;
+              """
+            : """
+              DELETE FROM account_capabilities
+              WHERE capability = @c
+                AND account_id = (SELECT id FROM accounts WHERE upn = @u);
+              """;
+        cmd.Parameters.AddWithValue("@c", capability);
         cmd.Parameters.AddWithValue("@u", accountUpn);
         cmd.ExecuteNonQuery();
     }
 
-    /// <summary>Whether this account may enumerate other mailboxes.</summary>
-    public static bool IsDiscoveryEnabled(SqliteConnection appDb, string accountUpn)
-    {
-        using var cmd = appDb.CreateCommand();
-        cmd.CommandText = "SELECT discovery_enabled FROM accounts WHERE upn = @u;";
-        cmd.Parameters.AddWithValue("@u", accountUpn);
-        return cmd.ExecuteScalar() is long flag && flag != 0;
-    }
+    /// <summary>Whether one capability is granted for this account.</summary>
+    public static bool HasCapability(SqliteConnection appDb, string accountUpn, string capability) =>
+        GetCapabilities(appDb, accountUpn).Contains(capability);
 
     /// <summary>True when this account already holds a mailbox at that address.</summary>
     public static bool Exists(SqliteConnection appDb, long accountId, string upn)

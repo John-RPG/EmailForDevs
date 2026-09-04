@@ -17,7 +17,26 @@ public static class AppDatabase
         return conn;
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1, V2];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3];
+
+    const string V3 = """
+        -- Which optional capabilities the user granted for this account, one row
+        -- each. A set rather than the old single flag: permissions differ in
+        -- breadth and in whether an administrator must approve them, so they are
+        -- accepted or refused individually.
+        CREATE TABLE account_capabilities(
+            account_id INTEGER NOT NULL REFERENCES accounts(id),
+            capability TEXT NOT NULL,
+            granted_at INTEGER NOT NULL,
+            PRIMARY KEY(account_id, capability)
+        );
+
+        -- Carry the old flag over: it stood for the two Graph lookup scopes.
+        INSERT INTO account_capabilities(account_id, capability, granted_at)
+        SELECT id, 'people', unixepoch() FROM accounts WHERE discovery_enabled = 1
+        UNION ALL
+        SELECT id, 'directory', unixepoch() FROM accounts WHERE discovery_enabled = 1;
+        """;
 
     /// <summary>Schema version a freshly-migrated app.db reports.</summary>
     public static int SchemaVersion => Migrations.Count;

@@ -18,6 +18,7 @@ using Mail.Storage;
 using Mail.Storage.Database;
 using Mail.Storage.Security;
 using Mail.Sync.Auth;
+using Microsoft.Identity.Client;
 using Mail.Sync.Graph;
 using Microsoft.Data.Sqlite;
 using Microsoft.Graph;
@@ -979,8 +980,8 @@ public partial class MainWindow : Window
         // Ask for exactly the scopes this account consented to: requesting more
         // than was granted cannot be satisfied from cache, and would drag every
         // account into a fresh prompt for a feature only some of them can use.
-        var discovery = MailboxRegistry.IsDiscoveryEnabled(_appDb!, accountUpn);
-        var scopes = GraphAuthenticator.ScopesFor(discovery);
+        var scopes = AccountCapability.GraphScopesFor(
+            MailboxRegistry.GetCapabilities(_appDb!, accountUpn));
         var accounts = await auth.GetAccountsAsync();
         var account = accounts.FirstOrDefault(a =>
             string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
@@ -990,7 +991,7 @@ public partial class MainWindow : Window
         else
         {
             Log($"Interactive sign-in required for {accountUpn}…");
-            token = await auth.SignInInteractiveAsync(accountUpn, withDiscovery: discovery);
+            token = await auth.SignInInteractiveAsync(accountUpn, scopes: scopes);
         }
         var client = new GraphServiceClient(
             new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, token)));
@@ -1403,7 +1404,7 @@ public partial class MainWindow : Window
             // The picker authenticates as an existing account; the token cache
             // and the handle needed for interactive sign-in both live here.
             GraphForAccount = GetGraphForAccountAsync,
-            SignInWithDiscovery = SignInWithDiscoveryAsync,
+            ApplyCapabilities = ApplyCapabilitiesAsync,
             MappedMailboxes = GetMappedMailboxesAsync,
         };
         window.ShowDialog();
@@ -1419,41 +1420,83 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Re-signs an account in asking for the discovery scopes, and reports what
-    /// was actually granted. A tenant can approve part of a request, so the
-    /// result is read back from the token rather than assumed from the ask.
+    /// Signs an account in requesting the scopes for a capability set, and
+    /// reports which capabilities actually came back.
+    ///
+    /// Graph and Exchange are separate resources and a token may only name one,
+    /// so they are requested in turn — the Exchange one only when a capability
+    /// on that resource was asked for, to avoid a second prompt nobody needs.
     /// </summary>
-    async Task<bool> SignInWithDiscoveryAsync(string accountUpn)
+    async Task<IReadOnlyList<string>> ApplyCapabilitiesAsync(
+        string accountUpn, IReadOnlyList<string> wanted)
     {
         var auth = new GraphAuthenticator(
             Path.Combine(_scratchRoot!, "msal.cache"),
             () => new WindowInteropHelper(this).Handle);
-        var scopes = GraphAuthenticator.ScopesFor(withDiscovery: true);
+        var granted = new List<string>();
 
-        // Try silently first. After an administrator approves the request, the
-        // grant already exists server-side, so this succeeds with no browser at
-        // all — which is exactly the state a user lands in when they consent,
-        // get told approval is needed, approve it, and come back.
-        var accounts = await auth.GetAccountsAsync();
-        var existing = accounts.FirstOrDefault(a =>
-            string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
-        var result = existing is null ? null : await auth.AcquireSilentAsync(existing, scopes);
-        if (result is not null)
-            Log(LogLevel.Debug, $"Discovery scopes already granted for {accountUpn}.");
-        else
-            result = await auth.SignInInteractiveAsync(accountUpn, withDiscovery: true);
+        // Capabilities needing no scope are local gates: honour them as asked.
+        foreach (var id in wanted)
+            if (AccountCapability.ById(id) is { Scopes.Count: 0 })
+                granted.Add(id);
 
-        var granted = GraphAuthenticator.DiscoveryScopes.All(scope =>
-            result.Scopes.Any(s => s.EndsWith(
-                scope[(scope.LastIndexOf('/') + 1)..], StringComparison.OrdinalIgnoreCase)));
+        var graphScopes = AccountCapability.GraphScopesFor(wanted);
+        var result = await SignInForScopesAsync(auth, accountUpn, graphScopes);
+        AddGranted(result?.Scopes, "https://graph.microsoft.com/");
 
-        // The cached client holds a token without the new scopes; drop it so the
-        // next call picks up the wider one.
-        _graphClients.Remove(accountUpn);
-        Log(granted
-            ? $"Discovery scopes granted for {accountUpn}."
-            : $"Discovery scopes were not granted for {accountUpn}.");
+        if (AccountCapability.NeedsExchangeToken(wanted))
+        {
+            Log($"Requesting Exchange permissions for {accountUpn}…");
+            var exchange = await SignInForScopesAsync(
+                auth, accountUpn, GraphAuthenticator.ExchangeScopes);
+            AddGranted(exchange?.Scopes, "https://outlook.office365.com/");
+        }
+
+        _graphClients.Remove(accountUpn);   // cached token predates the new scopes
+        Log($"Capabilities for {accountUpn}: {string.Join(", ", granted)}");
         return granted;
+
+        void AddGranted(IEnumerable<string>? scopes, string resource)
+        {
+            if (scopes is null) return;
+            var held = scopes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var capability in AccountCapability.All.Where(c => !c.Required))
+            {
+                var relevant = capability.Scopes
+                    .Where(s => s.StartsWith(resource, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (relevant.Count == 0) continue;
+                // A scope may come back bare or fully qualified depending on the
+                // tenant, so compare on the trailing name.
+                if (relevant.All(s => held.Any(h =>
+                        h.EndsWith(s[(s.LastIndexOf('/') + 1)..], StringComparison.OrdinalIgnoreCase))) &&
+                    !granted.Contains(capability.Id))
+                    granted.Add(capability.Id);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Silent first: after an administrator approves a request the grant already
+    /// exists, so returning here completes with no browser at all.
+    /// </summary>
+    static async Task<AuthenticationResult?> SignInForScopesAsync(
+        GraphAuthenticator auth, string accountUpn, string[] scopes)
+    {
+        try
+        {
+            var accounts = await auth.GetAccountsAsync();
+            var existing = accounts.FirstOrDefault(a =>
+                string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
+            var silent = existing is null ? null : await auth.AcquireSilentAsync(existing, scopes);
+            return silent ?? await auth.SignInInteractiveAsync(accountUpn, scopes: scopes);
+        }
+        catch (MsalException)
+        {
+            // Refused or cancelled: the caller reports what was granted, and an
+            // empty result is a truthful "nothing".
+            return null;
+        }
     }
 
     /// <summary>
@@ -1476,9 +1519,13 @@ public partial class MainWindow : Window
                 string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
             if (account is null) return [];
 
-            var token = await auth.AcquireSilentAsync(account, GraphAuthenticator.ExchangeScopes)
-                ?? await auth.SignInInteractiveAsync(
-                    accountUpn, scopes: GraphAuthenticator.ExchangeScopes);
+            // Only ask when the user granted it: without the capability this
+            // would pop a consent prompt they already declined.
+            if (!MailboxRegistry.HasCapability(_appDb!, accountUpn, AccountCapability.MappedLookup.Id))
+                return [];
+
+            var token = await auth.AcquireSilentAsync(account, GraphAuthenticator.ExchangeScopes);
+            if (token is null) return [];
 
             var mapped = await new AutodiscoverMailboxes(_http)
                 .GetAlternateMailboxesAsync(accountUpn, token.AccessToken);

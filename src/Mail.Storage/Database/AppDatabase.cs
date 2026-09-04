@@ -17,7 +17,37 @@ public static class AppDatabase
         return conn;
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4];
+
+    const string V4 = """
+        -- One table for every setting at every level. Only overrides are stored:
+        -- a level with no row inherits, which is what keeps "inherited" distinct
+        -- from "set to the same value the parent happens to have".
+        CREATE TABLE settings(
+            key        TEXT NOT NULL,
+            scope      INTEGER NOT NULL,   -- SettingScope: 0 folder … 3 application
+            target     TEXT NOT NULL DEFAULT '',  -- id at that scope; '' for application
+            value      TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(key, scope, target)
+        );
+
+        -- Fold the existing per-mailbox columns in, so nothing configured is lost.
+        -- Only real overrides move: a mailbox already on the default contributes
+        -- no row, leaving it free to follow the default if that later changes.
+        INSERT INTO settings(key, scope, target, value, updated_at)
+        SELECT 'sync.policy', 1, CAST(id AS TEXT), sync_policy, unixepoch()
+        FROM mailboxes WHERE sync_policy IS NOT NULL AND sync_policy <> 'MirrorServer';
+
+        INSERT INTO settings(key, scope, target, value, updated_at)
+        SELECT 'sync.window_months', 1, CAST(id AS TEXT),
+               CAST(sync_window_months AS TEXT), unixepoch()
+        FROM mailboxes WHERE sync_window_months IS NOT NULL AND sync_window_months > 0;
+
+        INSERT INTO settings(key, scope, target, value, updated_at)
+        SELECT 'sync.enabled', 1, CAST(id AS TEXT), 'false', unixepoch()
+        FROM mailboxes WHERE enabled = 0;
+        """;
 
     const string V3 = """
         -- Which optional capabilities the user granted for this account, one row

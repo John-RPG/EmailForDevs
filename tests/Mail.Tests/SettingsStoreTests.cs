@@ -1,0 +1,199 @@
+using System.Security.Cryptography;
+using Mail.Storage.Database;
+using Mail.Storage.Settings;
+using Microsoft.Data.Sqlite;
+
+namespace Mail.Tests;
+
+public sealed class SettingsStoreTests : IDisposable
+{
+    readonly string _dir = Path.Combine(
+        AppContext.BaseDirectory, "testdata", Guid.NewGuid().ToString("N"));
+    readonly SqliteConnection _appDb;
+    readonly SettingsStore _settings;
+
+    // A folder in a mailbox in an account: the full chain, narrowest first.
+    static readonly SettingTarget[] Chain =
+    [
+        SettingTarget.Folder(7, 42),
+        SettingTarget.Mailbox(7),
+        SettingTarget.Account(3),
+        SettingTarget.Application,
+    ];
+
+    public SettingsStoreTests()
+    {
+        Directory.CreateDirectory(_dir);
+        _appDb = AppDatabase.Open(
+            Path.Combine(_dir, "app.db"), RandomNumberGenerator.GetBytes(32));
+        _settings = new SettingsStore(_appDb);
+    }
+
+    public void Dispose()
+    {
+        _appDb.Dispose();
+        SqliteConnection.ClearAllPools();
+        try { Directory.Delete(_dir, recursive: true); } catch { /* best effort */ }
+    }
+
+    [Fact]
+    public void Unset_resolves_to_the_declared_default()
+    {
+        var resolved = _settings.Resolve(SettingsCatalog.LoadRemoteImages, Chain);
+        Assert.Equal("never", resolved.Value);
+        Assert.True(resolved.IsDefault);
+    }
+
+    [Fact]
+    public void Narrower_scope_wins()
+    {
+        _settings.Set(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Application, "always");
+        _settings.Set(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Account(3), "known senders");
+        _settings.Set(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Folder(7, 42), "never");
+
+        var resolved = _settings.Resolve(SettingsCatalog.LoadRemoteImages, Chain);
+        Assert.Equal("never", resolved.Value);
+        Assert.Equal(SettingScope.Folder, resolved.Source);
+    }
+
+    [Fact]
+    public void Resolution_reports_where_the_value_came_from()
+    {
+        // The UI has to distinguish "set here" from "inherited", or clearing an
+        // override becomes impossible to offer meaningfully.
+        _settings.Set(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Account(3), "always");
+
+        var resolved = _settings.Resolve(SettingsCatalog.LoadRemoteImages, Chain);
+        Assert.Equal(SettingScope.Account, resolved.Source);
+        Assert.False(resolved.IsDefault);
+    }
+
+    [Fact]
+    public void Clearing_an_override_restores_inheritance()
+    {
+        _settings.Set(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Account(3), "always");
+        _settings.Set(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Folder(7, 42), "never");
+        _settings.Clear(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Folder(7, 42));
+
+        var resolved = _settings.Resolve(SettingsCatalog.LoadRemoteImages, Chain);
+        Assert.Equal("always", resolved.Value);
+        Assert.Equal(SettingScope.Account, resolved.Source);
+    }
+
+    [Fact]
+    public void Changing_a_parent_moves_inheritors_but_not_overriders()
+    {
+        // The whole point of storing only overrides: a folder left inheriting
+        // follows its parent, while one explicitly set keeps its own value even
+        // when that value equals what it would have inherited.
+        _settings.Set(SettingsCatalog.RowDensity.Key, SettingTarget.Account(3), "single");
+        _settings.Set(SettingsCatalog.RowDensity.Key, SettingTarget.Folder(7, 42), "single");
+
+        _settings.Set(SettingsCatalog.RowDensity.Key, SettingTarget.Account(3), "three-line");
+
+        var pinned = _settings.Resolve(SettingsCatalog.RowDensity, Chain);
+        Assert.Equal("single", pinned.Value);
+
+        var inheriting = _settings.Resolve(SettingsCatalog.RowDensity,
+            SettingTarget.Folder(7, 99), SettingTarget.Mailbox(7),
+            SettingTarget.Account(3), SettingTarget.Application);
+        Assert.Equal("three-line", inheriting.Value);
+    }
+
+    [Fact]
+    public void Scopes_a_setting_does_not_declare_are_skipped()
+    {
+        // AllowScripts is application-only. A stray row at a narrower scope must
+        // not take effect, or the declared scope list would be a lie.
+        _settings.Set(SettingsCatalog.AllowScripts.Key, SettingTarget.Folder(7, 42), "true");
+        _settings.Set(SettingsCatalog.AllowScripts.Key, SettingTarget.Application, "false");
+
+        Assert.False(_settings.GetBool(SettingsCatalog.AllowScripts, Chain));
+    }
+
+    [Fact]
+    public void Targets_of_the_same_scope_do_not_collide()
+    {
+        _settings.Set(SettingsCatalog.SyncPolicy.Key, SettingTarget.Mailbox(7), "WindowedCache");
+
+        Assert.Equal("WindowedCache",
+            _settings.Resolve(SettingsCatalog.SyncPolicy, SettingTarget.Mailbox(7)).Value);
+        Assert.Equal("MirrorServer",
+            _settings.Resolve(SettingsCatalog.SyncPolicy, SettingTarget.Mailbox(8)).Value);
+    }
+
+    [Fact]
+    public void Folder_targets_are_scoped_to_their_mailbox()
+    {
+        // Folder ids repeat across mailboxes, so folder 1 of mailbox 7 and
+        // folder 1 of mailbox 8 must not share a value.
+        _settings.Set(SettingsCatalog.ShowInFavourites.Key, SettingTarget.Folder(7, 1), "true");
+
+        Assert.True(_settings.GetBool(SettingsCatalog.ShowInFavourites, SettingTarget.Folder(7, 1)));
+        Assert.False(_settings.GetBool(SettingsCatalog.ShowInFavourites, SettingTarget.Folder(8, 1)));
+    }
+
+    [Fact]
+    public void Overrides_lists_only_what_is_set_here()
+    {
+        _settings.Set(SettingsCatalog.SyncPolicy.Key, SettingTarget.Application, "WindowedCache");
+        _settings.Set(SettingsCatalog.RowDensity.Key, SettingTarget.Mailbox(7), "two-line");
+
+        var mailbox = _settings.Overrides(SettingTarget.Mailbox(7));
+        Assert.Single(mailbox);
+        Assert.Equal("two-line", mailbox[SettingsCatalog.RowDensity.Key]);
+    }
+
+    [Fact]
+    public void ClearAll_removes_a_targets_settings_only()
+    {
+        _settings.Set(SettingsCatalog.RowDensity.Key, SettingTarget.Mailbox(7), "two-line");
+        _settings.Set(SettingsCatalog.RowDensity.Key, SettingTarget.Mailbox(8), "three-line");
+
+        _settings.ClearAll(SettingTarget.Mailbox(7));
+
+        Assert.Empty(_settings.Overrides(SettingTarget.Mailbox(7)));
+        Assert.Single(_settings.Overrides(SettingTarget.Mailbox(8)));
+    }
+
+    [Fact]
+    public void Typed_accessors_fall_back_to_the_default_on_bad_input()
+    {
+        _settings.Set(SettingsCatalog.MaxConcurrentDownloads.Key,
+            SettingTarget.Application, "not a number");
+        Assert.Equal(4, _settings.GetInt(SettingsCatalog.MaxConcurrentDownloads, Chain));
+    }
+
+    [Fact]
+    public void Every_catalog_setting_declares_a_usable_default()
+    {
+        // A default that cannot be parsed as its own kind would fail only at the
+        // point of use, which may be far from here.
+        foreach (var setting in SettingsCatalog.All)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(setting.Key));
+            Assert.NotEmpty(setting.Scopes);
+            switch (setting.Kind)
+            {
+                case SettingKind.Bool:
+                    Assert.True(bool.TryParse(setting.Default, out _), setting.Key);
+                    break;
+                case SettingKind.Int:
+                    Assert.True(int.TryParse(setting.Default, out _), setting.Key);
+                    break;
+                case SettingKind.Enum:
+                    Assert.NotNull(setting.Choices);
+                    Assert.Contains(setting.Default, setting.Choices!);
+                    break;
+            }
+        }
+    }
+
+    [Fact]
+    public void Risky_settings_explain_the_risk()
+    {
+        foreach (var setting in SettingsCatalog.All.Where(s =>
+                     s.Risk is SettingRisk.Security or SettingRisk.Destructive))
+            Assert.False(string.IsNullOrWhiteSpace(setting.Warning), setting.Key);
+    }
+}

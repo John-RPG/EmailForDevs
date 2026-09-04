@@ -80,6 +80,84 @@ if (args.Contains("junk", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Contains("autodiscover", StringComparer.OrdinalIgnoreCase))
+{
+    // Outlook does not probe mailboxes to find out what it can open: it asks
+    // Autodiscover, which returns an AlternateMailbox list built from the
+    // directory's automapping links. One authenticated call, no access-denied
+    // noise in the audit log. This checks whether the same route works for us.
+    var adAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    using var http = new HttpClient();
+    foreach (var acct in await adAuth.GetAccountsAsync())
+    {
+        Console.WriteLine($"=== {acct.Username} ===");
+        // Autodiscover is an Outlook/EWS resource, not Graph: it needs a token
+        // for outlook.office365.com, so ask for the EWS scope specifically.
+        AuthenticationResult? tok = null;
+        string[] ewsScopes = ["https://outlook.office365.com/EWS.AccessAsUser.All"];
+        try { tok = await adAuth.AcquireSilentAsync(acct, ewsScopes); }
+        catch (Exception ex) { Console.WriteLine($"  token failed: {ex.Message}"); }
+        if (tok is null)
+        {
+            Console.WriteLine("  no EWS token (scope not consented) — trying Graph token instead");
+            tok = await adAuth.AcquireSilentAsync(acct);
+        }
+        if (tok is null) { Console.WriteLine("  needs interactive sign-in"); continue; }
+
+        var soap = $"""
+            <?xml version="1.0" encoding="utf-8"?>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                           xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover"
+                           xmlns:wsa="http://www.w3.org/2005/08/addressing"
+                           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+              <soap:Header>
+                <a:RequestedServerVersion>Exchange2013</a:RequestedServerVersion>
+                <wsa:Action>http://schemas.microsoft.com/exchange/2010/Autodiscover/Autodiscover/GetUserSettings</wsa:Action>
+                <wsa:To>https://outlook.office365.com/autodiscover/autodiscover.svc</wsa:To>
+              </soap:Header>
+              <soap:Body>
+                <a:GetUserSettingsRequestMessage>
+                  <a:Request>
+                    <a:Users><a:User><a:Mailbox>{acct.Username}</a:Mailbox></a:User></a:Users>
+                    <a:RequestedSettings>
+                      <a:Setting>UserDisplayName</a:Setting>
+                      <a:Setting>AlternateMailboxes</a:Setting>
+                    </a:RequestedSettings>
+                  </a:Request>
+                </a:GetUserSettingsRequestMessage>
+              </soap:Body>
+            </soap:Envelope>
+            """;
+
+        using var req = new HttpRequestMessage(HttpMethod.Post,
+            "https://outlook.office365.com/autodiscover/autodiscover.svc");
+        req.Headers.Authorization = new("Bearer", tok.AccessToken);
+        req.Content = new StringContent(soap, System.Text.Encoding.UTF8, "text/xml");
+        try
+        {
+            var resp = await http.SendAsync(req);
+            var body = await resp.Content.ReadAsStringAsync();
+            Console.WriteLine($"  HTTP {(int)resp.StatusCode} {resp.StatusCode}");
+            if (body.Contains("AlternateMailbox", StringComparison.OrdinalIgnoreCase))
+            {
+                foreach (System.Text.RegularExpressions.Match alt in
+                         System.Text.RegularExpressions.Regex.Matches(body,
+                             @"<AlternateMailbox>(.*?)</AlternateMailbox>",
+                             System.Text.RegularExpressions.RegexOptions.Singleline))
+                    Console.WriteLine("    " + alt.Groups[1].Value
+                        .Replace("\n", " ").Replace("\r", " "));
+            }
+            else
+            {
+                Console.WriteLine("    (no AlternateMailboxes in response)");
+                Console.WriteLine("    " + body[..Math.Min(600, body.Length)]);
+            }
+        }
+        catch (Exception ex) { Console.WriteLine($"  request failed: {ex.Message}"); }
+    }
+    return;
+}
+
 if (args.Contains("registry", StringComparer.OrdinalIgnoreCase))
 {
     foreach (var entry in MailboxRegistry.List(appDb))

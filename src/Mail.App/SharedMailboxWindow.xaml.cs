@@ -36,11 +36,18 @@ public partial class SharedMailboxWindow : Window
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Access)));
             }
         }
+
+        /// <summary>
+        /// null until known: true when Exchange mapped it or a check succeeded,
+        /// false when a check was refused. Unknown is not the same as "no".
+        /// </summary>
+        public bool? CanOpen { get; set; }
     }
 
     readonly SqliteConnection _appDb;
     readonly string _repoRoot;
     readonly Func<string, Task<GraphServiceClient>> _graphForAccount;
+    readonly Func<string, Task<IReadOnlyList<AutodiscoverMailboxes.AlternateMailbox>>>? _mapped;
     readonly ObservableCollection<CandidateRow> _candidates = [];
     List<MailboxRegistry.MailboxEntry> _accounts = [];
 
@@ -49,12 +56,14 @@ public partial class SharedMailboxWindow : Window
 
     public SharedMailboxWindow(
         SqliteConnection appDb, string repoRoot,
-        Func<string, Task<GraphServiceClient>> graphForAccount)
+        Func<string, Task<GraphServiceClient>> graphForAccount,
+        Func<string, Task<IReadOnlyList<AutodiscoverMailboxes.AlternateMailbox>>>? mappedMailboxes = null)
     {
         InitializeComponent();
         _appDb = appDb;
         _repoRoot = repoRoot;
         _graphForAccount = graphForAccount;
+        _mapped = mappedMailboxes;
         CandidateGrid.ItemsSource = _candidates;
         Loaded += (_, _) => LoadAccounts();
     }
@@ -84,21 +93,34 @@ public partial class SharedMailboxWindow : Window
         StatusLabel.Text = $"Looking for mailboxes reachable from {account}…";
         try
         {
+            // Ask Exchange what is actually mapped to this account before
+            // falling back to guesswork.
+            var mapped = _mapped is null ? [] : await _mapped(account);
             var graph = await _graphForAccount(account);
             var discovery = new SharedMailboxDiscovery(graph);
-            var found = await discovery.DiscoverAsync(account);
+            var found = await discovery.DiscoverAsync(account, mapped);
             foreach (var candidate in found)
                 _candidates.Add(new CandidateRow
                 {
                     Address = candidate.Address,
                     DisplayName = candidate.DisplayName,
                     Source = candidate.Source,
+                    // Exchange already vouched for a mapped mailbox, so it needs
+                    // no further check before being added.
+                    Access = candidate.IsMapped ? "mapped by Exchange" : "not checked",
+                    CanOpen = candidate.IsMapped ? true : null,
                 });
-            // An empty list means different things depending on why: without the
-            // discovery scopes we never even asked, and saying "nothing found"
-            // would be misleading.
+            // Say which of these Exchange actually vouched for. An empty list
+            // also means different things: without the discovery scopes we never
+            // asked at all, and "nothing found" would be misleading.
+            var mappedCount = found.Count(c => c.IsMapped);
             StatusLabel.Text = found.Count > 0
-                ? $"{found.Count:N0} candidate(s). Select one to check access."
+                ? mappedCount > 0
+                    ? $"{mappedCount:N0} mailbox(es) mapped to this account by Exchange" +
+                      (found.Count > mappedCount
+                          ? $", plus {found.Count - mappedCount:N0} suggestion(s) to check."
+                          : ". Select one and add it.")
+                    : $"{found.Count:N0} suggestion(s) — none mapped, so check access before adding."
                 : MailboxRegistry.IsDiscoveryEnabled(_appDb, account)
                     ? "Nothing found automatically — search the directory or type an address below."
                     : "Automatic lookup is off for this account (Accounts → Allow discovery). " +
@@ -154,7 +176,8 @@ public partial class SharedMailboxWindow : Window
         if (CandidateGrid.SelectedItem is CandidateRow row)
         {
             AddressBox.Text = row.Address;
-            AddButton.IsEnabled = false;   // access must be re-confirmed per address
+            // Exchange's own mapping is proof enough; anything else needs a check.
+            AddButton.IsEnabled = row.CanOpen == true;
         }
     }
 
@@ -182,10 +205,13 @@ public partial class SharedMailboxWindow : Window
             var result = await new SharedMailboxDiscovery(graph).TestAccessAsync(address);
             var row = _candidates.FirstOrDefault(c =>
                 string.Equals(c.Address, address, StringComparison.OrdinalIgnoreCase));
-            var summary = result.CanOpen
-                ? $"OK — {result.TotalItems:N0} items, {result.UnreadItems:N0} unread"
-                : result.Detail;
-            if (row is not null) row.Access = summary;
+            if (row is not null)
+            {
+                row.CanOpen = result.CanOpen;
+                row.Access = result.CanOpen
+                    ? $"Yes — {result.TotalItems:N0} items, {result.UnreadItems:N0} unread"
+                    : result.Detail;
+            }
 
             AddButton.IsEnabled = result.CanOpen;
             StatusLabel.Text = result.CanOpen

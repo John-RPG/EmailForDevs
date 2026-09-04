@@ -14,6 +14,7 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <DataGrid x:Name="MailboxGrid" Grid.Row="0" AutoGenerateColumns="False"
@@ -34,23 +35,26 @@
             </DataGrid.Columns>
         </DataGrid>
 
-        <DockPanel Grid.Row="1" Margin="0,8,0,0">
-            <TextBlock x:Name="StatusLabel" VerticalAlignment="Center" Foreground="Gray"/>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="Add account…" Padding="10,3" Margin="0,0,8,0" Click="OnAddAccount"/>
-                <Button Content="Allow discovery…" Padding="10,3" Margin="0,0,8,0"
-                        Click="OnEnableDiscovery"
-                        ToolTip="Re-consent this account so shared mailboxes can be listed and searched by name. Does not grant access to mail."/>
-                <Button Content="Add shared mailbox…" Padding="10,3" Margin="0,0,8,0"
-                        Click="OnAddShared"
-                        ToolTip="Mirror a mailbox belonging to someone else that you have been granted access to."/>
-                <Button Content="Remove shared" Padding="10,3" Margin="0,0,8,0" Click="OnRemoveShared"
-                        ToolTip="Forgets the selected shared mailbox and deletes its local database."/>
-                <Button Content="Reset sync state" Padding="10,3" Margin="0,0,8,0" Click="OnResetSync"
-                        ToolTip="Clears the selected mailbox's delta checkpoints; next sync re-lists (stored mail is not re-downloaded)."/>
-                <Button Content="Save" Padding="14,3" Margin="0,0,8,0" Click="OnSave"/>
-                <Button Content="Close" Padding="12,3" Click="OnCloseClick"/>
-            </StackPanel>
-        </DockPanel>
+        <WrapPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right"
+                   Margin="0,8,0,0">
+            <Button Content="Add account…" Padding="10,3" Margin="0,0,8,4" Click="OnAddAccount"/>
+            <Button Content="Allow discovery…" Padding="10,3" Margin="0,0,8,4"
+                    Click="OnEnableDiscovery"
+                    ToolTip="Re-consent this account so shared mailboxes can be listed and searched by name. Does not grant access to mail."/>
+            <Button Content="Add shared mailbox…" Padding="10,3" Margin="0,0,8,4"
+                    Click="OnAddShared"
+                    ToolTip="Mirror a mailbox belonging to someone else that you have been granted access to."/>
+            <Button Content="Remove shared" Padding="10,3" Margin="0,0,8,4" Click="OnRemoveShared"
+                    ToolTip="Forgets the selected shared mailbox and deletes its local database."/>
+            <Button Content="Reset sync state" Padding="10,3" Margin="0,0,8,4" Click="OnResetSync"
+                    ToolTip="Clears the selected mailbox's delta checkpoints; next sync re-lists (stored mail is not re-downloaded)."/>
+            <Button Content="Save" Padding="14,3" Margin="0,0,8,4" Click="OnSave"/>
+            <Button Content="Close" Padding="12,3" Margin="0,0,0,4" Click="OnCloseClick"/>
+        </WrapPanel>
+
+        <!-- Its own row: the status line explains consent failures, which are
+             long, and must never be painted over by the buttons. -->
+        <TextBlock x:Name="StatusLabel" Grid.Row="2" Margin="0,4,0,0"
+                   Foreground="Gray" TextWrapping="Wrap"/>
     </Grid>
 </Window>

@@ -46,6 +46,16 @@ public sealed class GraphAuthenticator
         "https://graph.microsoft.com/User.ReadBasic.All",
     ];
 
+    /// <summary>
+    /// Autodiscover lives on the Exchange resource, not Graph, so asking it which
+    /// mailboxes are mapped to the user needs a token for a different audience.
+    /// Requested on its own: mixing audiences in one request is rejected outright.
+    /// </summary>
+    public static readonly string[] ExchangeScopes =
+    [
+        "https://outlook.office365.com/EWS.AccessAsUser.All",
+    ];
+
     public static string[] ScopesFor(bool withDiscovery) =>
         withDiscovery ? [.. MailScopes, .. DiscoveryScopes] : MailScopes;
 
@@ -110,9 +120,9 @@ public sealed class GraphAuthenticator
     /// </summary>
     public Task<AuthenticationResult> SignInInteractiveAsync(
         string? loginHint = null, CancellationToken ct = default,
-        bool withDiscovery = false)
+        bool withDiscovery = false, IEnumerable<string>? scopes = null)
     {
-        var request = _app.AcquireTokenInteractive(ScopesFor(withDiscovery))
+        var request = _app.AcquireTokenInteractive(scopes ?? ScopesFor(withDiscovery))
             .WithUseEmbeddedWebView(false);
         request = loginHint is not null
             ? request.WithLoginHint(loginHint)

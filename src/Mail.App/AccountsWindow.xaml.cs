@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Interop;
 using Mail.Storage.Database;
 using Mail.Sync.Auth;
+using Mail.Sync.Graph;
 using Microsoft.Graph;
 using Microsoft.Identity.Client;
 using Microsoft.Data.Sqlite;
@@ -60,6 +61,13 @@ public partial class AccountsWindow : Window
     /// they were actually granted.
     /// </summary>
     public Func<string, Task<bool>>? SignInWithDiscovery { get; set; }
+
+    /// <summary>
+    /// Asks Exchange which mailboxes are mapped to an account. Owned by the main
+    /// window because it needs the token cache and a window for sign-in.
+    /// </summary>
+    public Func<string, Task<IReadOnlyList<AutodiscoverMailboxes.AlternateMailbox>>>?
+        MappedMailboxes { get; set; }
 
     public AccountsWindow(SqliteConnection appDb, string scratchRoot)
     {
@@ -319,7 +327,10 @@ public partial class AccountsWindow : Window
             StatusLabel.Text = "Shared mailboxes need an authenticated account; add an account first.";
             return;
         }
-        var picker = new SharedMailboxWindow(_appDb, _repoRoot, GraphForAccount) { Owner = this };
+        var picker = new SharedMailboxWindow(_appDb, _repoRoot, GraphForAccount, MappedMailboxes)
+        {
+            Owner = this,
+        };
         picker.ShowDialog();
         if (picker.MailboxesAdded)
         {
@@ -414,6 +425,23 @@ public partial class AccountsWindow : Window
                     "an administrator may need to approve them. You can still add " +
                     "shared mailboxes by typing their address.";
             }
+        }
+        catch (MsalServiceException ex) when (IsConsentRequired(ex))
+        {
+            StatusLabel.Text =
+                "This organisation requires an administrator to approve the lookup " +
+                "permissions. Approve the request, then click Allow discovery again.";
+        }
+        catch (MsalClientException ex) when (ex.ErrorCode == "authentication_canceled")
+        {
+            // MSAL reports "user canceled" whenever the browser closes without
+            // returning a token — including when it closed because the tenant
+            // demanded admin approval. Say what to do next rather than blaming
+            // the user for something they may not have done.
+            StatusLabel.Text =
+                "Sign-in did not complete. If you were asked for administrator " +
+                "approval, approve it and click Allow discovery again — no second " +
+                "sign-in is needed.";
         }
         catch (Exception ex)
         {

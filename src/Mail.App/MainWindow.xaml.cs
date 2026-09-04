@@ -2,6 +2,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -118,6 +119,9 @@ public partial class MainWindow : Window
     bool _webViewReady;
     string? _currentHtml;
     MailboxHandle? _currentMailbox;
+
+    /// <summary>Shared for Autodiscover; one per process, not one per call.</summary>
+    readonly HttpClient _http = new();
     long _currentMessageId;
 
     public MainWindow()
@@ -1400,6 +1404,7 @@ public partial class MainWindow : Window
             // and the handle needed for interactive sign-in both live here.
             GraphForAccount = GetGraphForAccountAsync,
             SignInWithDiscovery = SignInWithDiscoveryAsync,
+            MappedMailboxes = GetMappedMailboxesAsync,
         };
         window.ShowDialog();
         if (!window.ChangesApplied)
@@ -1423,7 +1428,20 @@ public partial class MainWindow : Window
         var auth = new GraphAuthenticator(
             Path.Combine(_scratchRoot!, "msal.cache"),
             () => new WindowInteropHelper(this).Handle);
-        var result = await auth.SignInInteractiveAsync(accountUpn, withDiscovery: true);
+        var scopes = GraphAuthenticator.ScopesFor(withDiscovery: true);
+
+        // Try silently first. After an administrator approves the request, the
+        // grant already exists server-side, so this succeeds with no browser at
+        // all — which is exactly the state a user lands in when they consent,
+        // get told approval is needed, approve it, and come back.
+        var accounts = await auth.GetAccountsAsync();
+        var existing = accounts.FirstOrDefault(a =>
+            string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
+        var result = existing is null ? null : await auth.AcquireSilentAsync(existing, scopes);
+        if (result is not null)
+            Log(LogLevel.Debug, $"Discovery scopes already granted for {accountUpn}.");
+        else
+            result = await auth.SignInInteractiveAsync(accountUpn, withDiscovery: true);
 
         var granted = GraphAuthenticator.DiscoveryScopes.All(scope =>
             result.Scopes.Any(s => s.EndsWith(
@@ -1436,6 +1454,44 @@ public partial class MainWindow : Window
             ? $"Discovery scopes granted for {accountUpn}."
             : $"Discovery scopes were not granted for {accountUpn}.");
         return granted;
+    }
+
+    /// <summary>
+    /// Asks Exchange which mailboxes are mapped to this account, the way Outlook
+    /// does. Needs a token for the Exchange audience rather than Graph, so it is
+    /// acquired here where interactive sign-in is possible. Returns nothing when
+    /// the permission is absent or the account has no Exchange behind it, which
+    /// is the normal case for consumer accounts.
+    /// </summary>
+    async Task<IReadOnlyList<AutodiscoverMailboxes.AlternateMailbox>> GetMappedMailboxesAsync(
+        string accountUpn)
+    {
+        try
+        {
+            var auth = new GraphAuthenticator(
+                Path.Combine(_scratchRoot!, "msal.cache"),
+                () => new WindowInteropHelper(this).Handle);
+            var accounts = await auth.GetAccountsAsync();
+            var account = accounts.FirstOrDefault(a =>
+                string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
+            if (account is null) return [];
+
+            var token = await auth.AcquireSilentAsync(account, GraphAuthenticator.ExchangeScopes)
+                ?? await auth.SignInInteractiveAsync(
+                    accountUpn, scopes: GraphAuthenticator.ExchangeScopes);
+
+            var mapped = await new AutodiscoverMailboxes(_http)
+                .GetAlternateMailboxesAsync(accountUpn, token.AccessToken);
+            Log(LogLevel.Debug,
+                $"Autodiscover: {mapped.Count:N0} mapped mailbox(es) for {accountUpn}.");
+            return mapped;
+        }
+        catch (Exception ex)
+        {
+            // Never fatal: the picker still works by typed address.
+            Log(LogLevel.Verbose, $"Autodiscover unavailable for {accountUpn}: {ex.Message}");
+            return [];
+        }
     }
 
     /// <summary>Re-reads the mailbox registry (after config changes) and rebuilds the tree.</summary>

@@ -38,7 +38,16 @@ public sealed class GraphMailboxSync(
     /// permission check either way.
     /// </summary>
     readonly Microsoft.Graph.Users.Item.UserItemRequestBuilder _mailbox =
-        graph.Users[mailboxAddress ?? "me"];
+        // /users/{upn} works for any mailbox the caller can open, including a
+        // shared one addressed by its SMTP address. "me" is NOT a valid id
+        // there — Graph answers 400 TargetIdShouldNotBeMeOrWhitespace, since /me
+        // is a separate endpoint — so an address is required rather than
+        // optional. Passing none used to produce /users/me and fail every call.
+        graph.Users[mailboxAddress is { Length: > 0 } address
+            ? address
+            : throw new ArgumentException(
+                "A mailbox address is required: /users/me is not a valid Graph target.",
+                nameof(mailboxAddress))];
 
     public enum SyncPhase { Folders, Counting, Scanning, Downloading, FolderDone, Throttled }
 

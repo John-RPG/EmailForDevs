@@ -45,7 +45,7 @@ public static class MailboxRegistry
             FROM mailboxes m
             JOIN accounts a ON a.id = m.account_id
             {(enabledOnly ? "WHERE m.enabled = 1" : "")}
-            ORDER BY a.id, m.kind = 'primary' DESC, m.position, m.id;
+            ORDER BY a.position, a.id, m.kind = 'primary' DESC, m.position, m.id;
             """;
         using var reader = cmd.ExecuteReader();
         var result = new List<MailboxEntry>();
@@ -108,6 +108,55 @@ public static class MailboxRegistry
     /// <summary>Whether one capability is granted for this account.</summary>
     public static bool HasCapability(SqliteConnection appDb, string accountUpn, string capability) =>
         GetCapabilities(appDb, accountUpn).Contains(capability);
+
+    /// <summary>
+    /// Moves an account up or down the display order. Positions are rewritten
+    /// densely from the current order rather than nudged, because rows created
+    /// before ordering existed all share position 0 and would otherwise never
+    /// separate.
+    /// </summary>
+    public static bool MoveAccount(SqliteConnection appDb, long accountId, int delta)
+    {
+        var ids = new List<long>();
+        using (var read = appDb.CreateCommand())
+        {
+            read.CommandText = "SELECT id FROM accounts ORDER BY position, id;";
+            using var reader = read.ExecuteReader();
+            while (reader.Read()) ids.Add(reader.GetInt64(0));
+        }
+
+        var index = ids.IndexOf(accountId);
+        var target = index + delta;
+        if (index < 0 || target < 0 || target >= ids.Count) return false;
+
+        (ids[index], ids[target]) = (ids[target], ids[index]);
+
+        using var tx = appDb.BeginTransaction();
+        for (var i = 0; i < ids.Count; i++)
+        {
+            using var write = appDb.CreateCommand();
+            write.Transaction = tx;
+            write.CommandText = "UPDATE accounts SET position = @p WHERE id = @i;";
+            write.Parameters.AddWithValue("@p", i);
+            write.Parameters.AddWithValue("@i", ids[i]);
+            write.ExecuteNonQuery();
+        }
+        tx.Commit();
+        return true;
+    }
+
+    /// <summary>Accounts in display order, for a reordering UI.</summary>
+    public static List<(long Id, string Upn)> ListAccounts(SqliteConnection appDb)
+    {
+        using var cmd = appDb.CreateCommand();
+        cmd.CommandText = """
+            SELECT id, coalesce(upn, display_name) FROM accounts ORDER BY position, id;
+            """;
+        using var reader = cmd.ExecuteReader();
+        var result = new List<(long, string)>();
+        while (reader.Read()) result.Add((reader.GetInt64(0), reader.GetString(1)));
+        return result;
+    }
 
     /// <summary>True when this account already holds a mailbox at that address.</summary>
     public static bool Exists(SqliteConnection appDb, long accountId, string upn)

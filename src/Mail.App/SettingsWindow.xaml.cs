@@ -309,6 +309,10 @@ public partial class SettingsWindow : Window
                     "Choose what this app may do with this account, and see what each costs."));
                 actions.Add(new("add-shared", "Add shared mailbox…",
                     "Mirror a mailbox someone has granted you access to."));
+                actions.Add(new("move-up", "Move up",
+                    "Show this account earlier in the folder tree."));
+                actions.Add(new("move-down", "Move down",
+                    "Show this account later in the folder tree."));
                 detail = DescribeCapabilities(node.AccountUpn);
                 break;
 
@@ -390,6 +394,21 @@ public partial class SettingsWindow : Window
                     ChangesApplied = true;
                     BuildScopeTree();
                     StatusLabel.Text = "Shared mailbox added; it will populate on the next sync.";
+                }
+                break;
+
+            case "move-up" or "move-down" when long.TryParse(_selected.Target.Key, out var accountId):
+                if (MailboxRegistry.MoveAccount(_appDb, accountId, id == "move-up" ? -1 : 1))
+                {
+                    ChangesApplied = true;
+                    var order = MailboxRegistry.ListAccounts(_appDb).Select(a => a.Upn);
+                    StatusLabel.Text = $"Order: {string.Join(" → ", order)}";
+                    BuildScopeTree();
+                }
+                else
+                {
+                    StatusLabel.Text = id == "move-up"
+                        ? "Already first." : "Already last.";
                 }
                 break;
 

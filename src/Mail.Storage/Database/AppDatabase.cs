@@ -17,7 +17,14 @@ public static class AppDatabase
         return conn;
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4, V5, V6, V7];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4, V5, V6, V7, V8];
+
+    const string V8 = """
+        -- Accounts are ordered as units, so the folder tree can be arranged the
+        -- way the user wants rather than by the order they happened to sign in.
+        ALTER TABLE accounts ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+        UPDATE accounts SET position = id;
+        """;
 
     const string V7 = """
         -- Unsent messages. In app.db rather than a mailbox database because a

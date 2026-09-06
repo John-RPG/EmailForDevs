@@ -1987,7 +1987,7 @@ public partial class MainWindow : Window
     {
         if (_appDb is null) return false;
         var picker = new SharedMailboxWindow(
-            _appDb, repoRoot, GetGraphForAccountAsync, GetMappedMailboxesAsync)
+            _appDb, repoRoot, GetGraphForAccountAsync, GetMappedMailboxesAsync, accountUpn)
         {
             Owner = Application.Current.Windows.OfType<SettingsWindow>().FirstOrDefault() ?? (Window)this,
         };

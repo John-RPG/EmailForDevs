@@ -104,6 +104,103 @@ if (args.Contains("mapped", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Length > 0 && args[0].Equals("sharedstate", StringComparison.OrdinalIgnoreCase))
+{
+    foreach (var entry in MailboxRegistry.List(appDb).Where(m => m.Kind == "shared"))
+    {
+        var path = Path.IsPathRooted(entry.DbPath) ? entry.DbPath : Path.GetFullPath(entry.DbPath);
+        Console.WriteLine($"=== {entry.Upn} (under {entry.AccountUpn}) ===");
+        if (!File.Exists(path)) { Console.WriteLine("  no database file yet"); continue; }
+        Console.WriteLine($"  file: {new FileInfo(path).Length:N0} bytes");
+        try
+        {
+            using var db = MailboxDatabase.Open(path, entry.Dek);
+            using var f = db.CreateCommand();
+            f.CommandText = "SELECT count(*) FROM folders;";
+            Console.WriteLine($"  folders : {f.ExecuteScalar()}");
+            using var msgs = db.CreateCommand();
+            msgs.CommandText = "SELECT count(*) FROM messages;";
+            Console.WriteLine($"  messages: {msgs.ExecuteScalar()}");
+            using var list = db.CreateCommand();
+            list.CommandText = """
+                SELECT f.name, f.server_total,
+                       (SELECT count(*) FROM messages WHERE folder_id = f.id)
+                FROM folders f ORDER BY f.name LIMIT 15;
+                """;
+            using var reader = list.ExecuteReader();
+            while (reader.Read())
+                Console.WriteLine($"      {reader.GetString(0),-28} server={reader.GetInt64(1),7:N0} local={reader.GetInt64(2),7:N0}");
+        }
+        catch (Exception ex) { Console.WriteLine($"  open failed: {ex.Message}"); }
+    }
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("idprobe", StringComparison.OrdinalIgnoreCase))
+{
+    // Which addressing forms does Graph accept for a shared mailbox? /users/me
+    // is not one of them — /me is a separate endpoint — and a shared mailbox's
+    // SMTP address may differ from its userPrincipalName.
+    var ipAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    var ipAcct = (await ipAuth.GetAccountsAsync())
+        .FirstOrDefault(a => a.Username.Contains("ExampleCorp", StringComparison.OrdinalIgnoreCase));
+    if (ipAcct is null) { Console.WriteLine("work account not signed in"); return; }
+    var ipTok = await ipAuth.AcquireSilentAsync(ipAcct);
+    if (ipTok is null) { Console.WriteLine("no token"); return; }
+    var g = new GraphServiceClient(new BaseBearerTokenAuthenticationProvider(
+        new GraphTokenProvider(ipAuth, ipTok)));
+
+    async Task Try(string label, Func<Task> call)
+    {
+        try { await call(); Console.WriteLine($"  {label,-46} OK"); }
+        catch (ODataError ex) { Console.WriteLine($"  {label,-46} {ex.ResponseStatusCode} {ex.Error?.Code}: {ex.Error?.Message}"); }
+        catch (Exception ex) { Console.WriteLine($"  {label,-46} {ex.GetType().Name}"); }
+    }
+
+    Console.WriteLine("Own mailbox:");
+    await Try("graph.Me.MailFolders", async () => await g.Me.MailFolders.GetAsync(rc => rc.QueryParameters.Top = 1));
+    await Try("graph.Users[\"me\"].MailFolders", async () => await g.Users["me"].MailFolders.GetAsync(rc => rc.QueryParameters.Top = 1));
+    await Try($"graph.Users[\"{ipAcct.Username}\"].MailFolders", async () => await g.Users[ipAcct.Username].MailFolders.GetAsync(rc => rc.QueryParameters.Top = 1));
+
+    Console.WriteLine("Shared mailbox (shared@example.com):");
+    await Try("graph.Users[smtp].MailFolders", async () => await g.Users["shared@example.com"].MailFolders.GetAsync(rc => rc.QueryParameters.Top = 1));
+    await Try("graph.Users[smtp].MailFolders[inbox]", async () => await g.Users["shared@example.com"].MailFolders["inbox"].GetAsync());
+    await Try("graph.Users[smtp].Messages", async () => await g.Users["shared@example.com"].Messages.GetAsync(rc => rc.QueryParameters.Top = 1));
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("grantcap", StringComparison.OrdinalIgnoreCase))
+{
+    // Records a capability as granted, but only after confirming the scopes are
+    // actually held — the whole point of the flag is that it reflects what the
+    // tenant granted, not what was asked for.
+    var rest = args.SkipWhile(a => !a.Equals("grantcap", StringComparison.OrdinalIgnoreCase)).Skip(1).ToList();
+    if (rest.Count < 2) { Console.WriteLine("Usage: grantcap <account-upn> <capability-id>"); return; }
+    var who = rest[0];
+    var capId = rest[1];
+    var capability = AccountCapability.ById(capId);
+    if (capability is null) { Console.WriteLine($"unknown capability '{capId}'"); return; }
+
+    var gAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    var gAcct = (await gAuth.GetAccountsAsync())
+        .FirstOrDefault(a => a.Username.Equals(who, StringComparison.OrdinalIgnoreCase));
+    if (gAcct is null) { Console.WriteLine($"{who} is not signed in"); return; }
+
+    var exchange = capability.Scopes.Any(x => x.Contains("outlook.office365.com"));
+    var scopes = exchange ? GraphAuthenticator.ExchangeScopes : [.. capability.Scopes];
+    var held = await gAuth.AcquireSilentAsync(gAcct, scopes);
+    if (held is null)
+    {
+        Console.WriteLine($"  {who}: the scopes for \"{capability.Name}\" are NOT held — not recording.");
+        return;
+    }
+
+    MailboxRegistry.SetCapability(appDb, who, capId, true);
+    Console.WriteLine($"  {who}: \"{capability.Name}\" recorded as granted.");
+    Console.WriteLine($"    token holds: {string.Join(" ", held.Scopes.Select(x => x[(x.LastIndexOf('/') + 1)..]))}");
+    return;
+}
+
 if (args.Contains("autodiscover", StringComparer.OrdinalIgnoreCase))
 {
     // Outlook does not probe mailboxes to find out what it can open: it asks
@@ -178,6 +275,410 @@ if (args.Contains("autodiscover", StringComparer.OrdinalIgnoreCase))
             }
         }
         catch (Exception ex) { Console.WriteLine($"  request failed: {ex.Message}"); }
+    }
+    return;
+}
+
+if (args.Contains("scopecheck", StringComparer.OrdinalIgnoreCase))
+{
+    // Compares the scopes the app now asks for against what the cached token
+    // actually holds. A mismatch means MSAL cannot answer silently, which is
+    // what forces a browser prompt on every launch.
+    var scAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    foreach (var acct in await scAuth.GetAccountsAsync())
+    {
+        Console.WriteLine($"=== {acct.Username} ===");
+        var caps = MailboxRegistry.GetCapabilities(appDb, acct.Username);
+        var wanted = AccountCapability.GraphScopesFor(caps);
+        Console.WriteLine($"  capabilities recorded : [{string.Join(",", caps.OrderBy(c => c))}]");
+        Console.WriteLine($"  app will request      : {string.Join(" ", wanted.Select(w => w[(w.LastIndexOf('/') + 1)..]))}");
+
+        var silent = await scAuth.AcquireSilentAsync(acct, wanted);
+        if (silent is null)
+        {
+            Console.WriteLine("  SILENT FAILS -> would open a browser");
+            var basic = await scAuth.AcquireSilentAsync(acct, GraphAuthenticator.MailScopes);
+            Console.WriteLine(basic is null
+                ? "  (even the base mail scopes fail silently)"
+                : $"  but base mail scopes succeed, holding: {string.Join(" ", basic.Scopes.Select(x => x[(x.LastIndexOf('/') + 1)..]))}");
+        }
+        else
+        {
+            Console.WriteLine($"  silent OK, token holds: {string.Join(" ", silent.Scopes.Select(x => x[(x.LastIndexOf('/') + 1)..]))}");
+        }
+    }
+    return;
+}
+
+if (args.Contains("provewiring", StringComparer.OrdinalIgnoreCase))
+{
+    // Proves the app reads settings rather than the legacy columns, by resolving
+    // exactly what the sync loop resolves for each mailbox.
+    var store = new SettingsStore(appDb);
+    Console.WriteLine("Effective sync settings per mailbox (as the app resolves them):");
+    foreach (var entry in MailboxRegistry.List(appDb, enabledOnly: true))
+    {
+        SettingTarget[] chain =
+        [
+            SettingTarget.Mailbox(entry.Id),
+            SettingTarget.Account(entry.AccountId),
+            SettingTarget.Application,
+        ];
+        var policy = store.Resolve(SettingsCatalog.SyncPolicy, chain);
+        var window = store.Resolve(SettingsCatalog.SyncWindowMonths, chain);
+        var conc = store.Resolve(SettingsCatalog.MaxConcurrentDownloads, chain);
+        var enabled = store.Resolve(SettingsCatalog.SyncEnabled, chain);
+        var listFmt = store.Resolve(SettingsCatalog.ListDateFormat, chain);
+
+        Console.WriteLine($"  {entry.Upn}");
+        Console.WriteLine($"      policy      {policy.Value,-14} (from {policy.Source})");
+        Console.WriteLine($"      window      {window.Value,-14} (from {window.Source})");
+        Console.WriteLine($"      concurrency {conc.Value,-14} (from {conc.Source})");
+        Console.WriteLine($"      enabled     {enabled.Value,-14} (from {enabled.Source})");
+        Console.WriteLine($"      list dates  {listFmt.Value,-14} (from {listFmt.Source})");
+        Console.WriteLine($"      legacy columns said: policy={entry.Policy} window={entry.WindowMonths}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("Favourites now stored as folder settings:");
+    using (var fav = appDb.CreateCommand())
+    {
+        fav.CommandText = """
+            SELECT target FROM settings
+            WHERE key = 'display.favourite' AND value = 'true' ORDER BY target;
+            """;
+        using var reader = fav.ExecuteReader();
+        var any = false;
+        while (reader.Read()) { any = true; Console.WriteLine($"      folder {reader.GetString(0)}"); }
+        if (!any) Console.WriteLine("      (none)");
+    }
+
+    using (var legacy = appDb.CreateCommand())
+    {
+        legacy.CommandText = "SELECT count(*) FROM ui_state WHERE key = 'favourites';";
+        Console.WriteLine($"  legacy ui_state blob rows remaining: {legacy.ExecuteScalar()}");
+    }
+    return;
+}
+
+if (args.Contains("doorbell", StringComparer.OrdinalIgnoreCase))
+{
+    // End-to-end proof: hold the long poll open on the work account, send a
+    // message to it from another account, and see whether the server tells us
+    // before the window would have expired.
+    var dbAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    using var dbHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(6) };
+    var target = "user@example.com";
+
+    var acct = (await dbAuth.GetAccountsAsync())
+        .FirstOrDefault(a => a.Username.Equals(target, StringComparison.OrdinalIgnoreCase));
+    if (acct is null) { Console.WriteLine("work account not signed in"); return; }
+    var tok = await dbAuth.AcquireSilentAsync(acct, GraphAuthenticator.ExchangeScopes);
+    if (tok is null) { Console.WriteLine("no Exchange token"); return; }
+
+    var stream = new MailboxEventStream(dbHttp);
+    var sub = await stream.SubscribeAsync(target, tok.AccessToken, signedInAs: target);
+    if (sub is null) { Console.WriteLine("subscribe failed"); return; }
+    Console.WriteLine($"Subscribed to {target}. Holding the connection open…");
+
+    // Send from a personal account while the poll is held.
+    var senderAcct = (await dbAuth.GetAccountsAsync())
+        .FirstOrDefault(a => a.Username.Contains("hotmail", StringComparison.OrdinalIgnoreCase));
+    if (senderAcct is not null)
+    {
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(6));
+            try
+            {
+                var sendTok = await dbAuth.AcquireSilentAsync(senderAcct);
+                if (sendTok is null) { Console.WriteLine("  (sender has no token)"); return; }
+                var g = new GraphServiceClient(new BaseBearerTokenAuthenticationProvider(
+                    new GraphTokenProvider(dbAuth, sendTok)));
+                var draft = new Mail.Core.Compose.Draft(
+                    senderAcct.Username, [target], [], [],
+                    $"eeeMail doorbell test {DateTime.Now:HH:mm:ss}",
+                    "Sent to prove the live-update long poll fires.");
+                var mime = Mail.Core.Compose.ReplyBuilder.ToMimeMessage(draft);
+                using var ms = new MemoryStream();
+                await mime.WriteToAsync(ms);
+                using var req = new HttpRequestMessage(HttpMethod.Post,
+                    "https://graph.microsoft.com/v1.0/me/sendMail");
+                req.Headers.Authorization = new("Bearer", sendTok.AccessToken);
+                req.Content = new StringContent(
+                    Convert.ToBase64String(ms.ToArray()),
+                    System.Text.Encoding.UTF8, "text/plain");
+                using var send = new HttpClient();
+                var resp = await send.SendAsync(req);
+                Console.WriteLine($"  [sender] sent from {senderAcct.Username}: HTTP {(int)resp.StatusCode}");
+            }
+            catch (Exception ex) { Console.WriteLine($"  [sender] failed: {ex.Message}"); }
+        });
+    }
+
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    var result = await stream.WaitForEventsAsync(sub, tok.AccessToken, connectionMinutes: 5,
+        onEvents: evts => Console.WriteLine(
+            $"  *** {sw.Elapsed.TotalSeconds:N1}s: {string.Join(", ", evts)} (delivered live)"));
+    sw.Stop();
+    Console.WriteLine($"Returned after {sw.Elapsed.TotalSeconds:N1}s");
+    Console.WriteLine($"  events: {(result.Events.Count == 0 ? "(none)" : string.Join(", ", result.Events))}");
+    Console.WriteLine($"  subscription lapsed: {result.SubscriptionLapsed}");
+    Console.WriteLine(result.Events.Count > 0
+        ? "  => the doorbell rang before the window closed: this is push, not polling."
+        : "  => quiet window (no change detected).");
+    return;
+}
+
+if (args.Contains("streamprobe", StringComparer.OrdinalIgnoreCase))
+{
+    // EWS streaming notifications are a long poll: Subscribe once, then
+    // GetStreamingEvents holds the connection open (up to 30 minutes) and
+    // writes events down it as they happen, returning when the window ends so
+    // the client re-issues it. That is push-shaped without needing a public
+    // endpoint — and it uses the EWS token we already hold for Autodiscover,
+    // so it costs no new permission.
+    var stAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+
+    foreach (var acct in await stAuth.GetAccountsAsync())
+    {
+        Console.WriteLine($"=== {acct.Username} ===");
+        AuthenticationResult? tok = null;
+        try { tok = await stAuth.AcquireSilentAsync(acct, GraphAuthenticator.ExchangeScopes); }
+        catch (Exception ex) { Console.WriteLine($"  token failed: {ex.Message.Split('.')[0]}"); }
+        if (tok is null) { Console.WriteLine("  no EWS token (scope not consented here)"); continue; }
+
+        const string ews = "https://outlook.office365.com/EWS/Exchange.asmx";
+
+        // 1. Subscribe to the inbox.
+        var subscribe = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+                           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+              <soap:Header>
+                <t:RequestServerVersion Version="Exchange2013"/>
+              </soap:Header>
+              <soap:Body>
+                <m:Subscribe>
+                  <m:StreamingSubscriptionRequest>
+                    <t:FolderIds><t:DistinguishedFolderId Id="inbox"/></t:FolderIds>
+                    <t:EventTypes>
+                      <t:EventType>NewMailEvent</t:EventType>
+                      <t:EventType>CreatedEvent</t:EventType>
+                      <t:EventType>ModifiedEvent</t:EventType>
+                      <t:EventType>DeletedEvent</t:EventType>
+                    </t:EventTypes>
+                  </m:StreamingSubscriptionRequest>
+                </m:Subscribe>
+              </soap:Body>
+            </soap:Envelope>
+            """;
+
+        string? subscriptionId = null;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, ews);
+            req.Headers.Authorization = new("Bearer", tok.AccessToken);
+            req.Content = new StringContent(subscribe, System.Text.Encoding.UTF8, "text/xml");
+            var resp = await http.SendAsync(req);
+            var body = await resp.Content.ReadAsStringAsync();
+            Console.WriteLine($"  Subscribe: HTTP {(int)resp.StatusCode}");
+
+            var sub = System.Text.RegularExpressions.Regex.Match(body, @"<[mt]:SubscriptionId>(.*?)</[mt]:SubscriptionId>");
+            if (sub.Success) subscriptionId = sub.Groups[1].Value;
+            else
+            {
+                var err = System.Text.RegularExpressions.Regex.Match(body, @"<faultstring[^>]*>(.*?)</faultstring>");
+                Console.WriteLine($"    no subscription. Response:");
+                Console.WriteLine(body.Length > 1600 ? body[..1600] : body);
+                continue;
+            }
+            Console.WriteLine($"    subscription id: {subscriptionId[..Math.Min(28, subscriptionId.Length)]}…");
+        }
+        catch (Exception ex) { Console.WriteLine($"  Subscribe failed: {ex.Message}"); continue; }
+
+        // 2. Hold the long poll open briefly to prove it stays connected.
+        var stream = $"""
+            <?xml version="1.0" encoding="utf-8"?>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+                           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+              <soap:Header><t:RequestServerVersion Version="Exchange2013"/></soap:Header>
+              <soap:Body>
+                <m:GetStreamingEvents>
+                  <m:SubscriptionIds><t:SubscriptionId>{subscriptionId}</t:SubscriptionId></m:SubscriptionIds>
+                  <m:ConnectionTimeout>1</m:ConnectionTimeout>
+                </m:GetStreamingEvents>
+              </soap:Body>
+            </soap:Envelope>
+            """;
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            using var req = new HttpRequestMessage(HttpMethod.Post, ews);
+            req.Headers.Authorization = new("Bearer", tok.AccessToken);
+            req.Content = new StringContent(stream, System.Text.Encoding.UTF8, "text/xml");
+            Console.WriteLine("  GetStreamingEvents: holding open (1 minute window)…");
+            var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+            var body = await resp.Content.ReadAsStringAsync();
+            sw.Stop();
+            Console.WriteLine($"    returned after {sw.Elapsed.TotalSeconds:N1}s, HTTP {(int)resp.StatusCode}");
+            var status = System.Text.RegularExpressions.Regex.Match(body, @"<t:ConnectionStatus>(.*?)</t:ConnectionStatus>");
+            Console.WriteLine($"    connection status: {(status.Success ? status.Groups[1].Value : "(none)")}");
+            foreach (System.Text.RegularExpressions.Match ev in
+                     System.Text.RegularExpressions.Regex.Matches(body, @"<t:(\w+Event)>"))
+                Console.WriteLine($"    event: {ev.Groups[1].Value}");
+        }
+        catch (Exception ex) { Console.WriteLine($"  GetStreamingEvents failed: {ex.GetType().Name}: {ex.Message}"); }
+    }
+    return;
+}
+
+if (args.Contains("idleprobe", StringComparer.OrdinalIgnoreCase))
+{
+    // Can we hold an IMAP IDLE connection using the OAuth token we already have?
+    // Graph has no push option for a desktop client (webhooks need a public
+    // HTTPS endpoint), so IDLE is the only real-time route — but only if
+    // Outlook still serves IMAP to these accounts over XOAUTH2.
+    var idleAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    string[] imapScopes = ["https://outlook.office.com/IMAP.AccessAsUser.All"];
+
+    foreach (var acct in await idleAuth.GetAccountsAsync())
+    {
+        Console.WriteLine($"=== {acct.Username} ===");
+        AuthenticationResult? tok = null;
+        try { tok = await idleAuth.AcquireSilentAsync(acct, imapScopes); }
+        catch (Exception ex) { Console.WriteLine($"  no IMAP token: {ex.Message.Split('.')[0]}"); }
+        if (tok is null)
+        {
+            Console.WriteLine("  IMAP scope not consented — would need it added to the registration.");
+            continue;
+        }
+
+        using var client = new MailKit.Net.Imap.ImapClient();
+        try
+        {
+            await client.ConnectAsync("outlook.office365.com", 993,
+                MailKit.Security.SecureSocketOptions.SslOnConnect);
+            await client.AuthenticateAsync(
+                new MailKit.Security.SaslMechanismOAuth2(acct.Username, tok.AccessToken));
+            Console.WriteLine($"  connected. IDLE supported: {client.Capabilities.HasFlag(MailKit.Net.Imap.ImapCapabilities.Idle)}");
+
+            var inbox = client.Inbox;
+            await inbox.OpenAsync(MailKit.FolderAccess.ReadOnly);
+            Console.WriteLine($"  inbox: {inbox.Count:N0} messages, {inbox.Unread:N0} unread");
+
+            if (client.Capabilities.HasFlag(MailKit.Net.Imap.ImapCapabilities.Idle))
+            {
+                Console.WriteLine("  holding IDLE for 20s to prove the connection stays up…");
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var fired = false;
+                inbox.CountChanged += (_, _) => { fired = true; Console.WriteLine("  *** IDLE fired: message count changed"); };
+                try { await client.IdleAsync(timeout.Token); }
+                catch (OperationCanceledException) { }
+                Console.WriteLine($"  IDLE held cleanly (event fired during window: {fired})");
+            }
+            await client.DisconnectAsync(true);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  IMAP failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+    return;
+}
+
+if (args.Contains("drafts", StringComparer.OrdinalIgnoreCase))
+{
+    var store = new DraftStore(appDb);
+    var saved = store.List();
+    Console.WriteLine($"{saved.Count:N0} saved draft(s):");
+    foreach (var d in saved)
+    {
+        Console.WriteLine($"  [{d.Id}] {d.Display}");
+        Console.WriteLine($"      from={d.From} rich={d.IsRich} updated={d.UpdatedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
+        var body = (d.HtmlBody ?? d.Body).Replace("\r", " ").Replace("\n", " ");
+        Console.WriteLine($"      body: {body[..Math.Min(90, body.Length)]}");
+        if (d.Attachments.Count > 0)
+            Console.WriteLine($"      attachments: {string.Join(", ", d.Attachments.Select(a => a.FileName))}");
+    }
+    return;
+}
+
+if (args.Contains("settings", StringComparer.OrdinalIgnoreCase))
+{
+    // Walks the real store against the live profile, so inheritance is checked
+    // on actual account/mailbox ids rather than only in unit tests.
+    var store = new SettingsStore(appDb);
+    var entries = MailboxRegistry.List(appDb);
+    var work = entries.FirstOrDefault(e => e.Upn.Contains("ExampleCorp", StringComparison.OrdinalIgnoreCase))
+               ?? entries.First();
+
+    var accountTarget = SettingTarget.Account(work.AccountId);
+    var mailboxTarget = SettingTarget.Mailbox(work.Id);
+    SettingTarget[] chain = [mailboxTarget, accountTarget, SettingTarget.Application];
+
+    void Show(string label)
+    {
+        var r = store.Resolve(SettingsCatalog.LoadRemoteImages, chain);
+        Console.WriteLine($"  {label,-34} value={r.Value,-14} from={r.Source,-11} default={r.IsDefault}");
+    }
+
+    Console.WriteLine($"=== {work.Upn} (mailbox {work.Id}, account {work.AccountId}) ===");
+    Show("initial");
+
+    store.Set(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Application, "always");
+    Show("after application=always");
+
+    store.Set(SettingsCatalog.LoadRemoteImages.Key, accountTarget, "known senders");
+    Show("after account=known senders");
+
+    store.Set(SettingsCatalog.LoadRemoteImages.Key, mailboxTarget, "never");
+    Show("after mailbox=never");
+
+    store.Clear(SettingsCatalog.LoadRemoteImages.Key, mailboxTarget);
+    Show("after clearing mailbox");
+
+    store.Clear(SettingsCatalog.LoadRemoteImages.Key, accountTarget);
+    Show("after clearing account");
+
+    store.Clear(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Application);
+    Show("after clearing application");
+
+    Console.WriteLine();
+    Console.WriteLine("Overrides carried over by the V4 migration:");
+    foreach (var entry in entries)
+    {
+        var overrides = store.Overrides(SettingTarget.Mailbox(entry.Id));
+        if (overrides.Count == 0) continue;
+        Console.WriteLine($"  {entry.Upn}");
+        foreach (var (key, value) in overrides)
+            Console.WriteLine($"      {key} = {value}");
+    }
+    return;
+}
+
+if (args.Contains("mapped", StringComparer.OrdinalIgnoreCase))
+{
+    // Exercises the real AutodiscoverMailboxes parser (not the probe's regex),
+    // so the shipping code path is what gets verified.
+    var mapAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    using var mapHttp = new HttpClient();
+    var finder = new AutodiscoverMailboxes(mapHttp);
+    foreach (var acct in await mapAuth.GetAccountsAsync())
+    {
+        Console.WriteLine($"=== {acct.Username} ===");
+        AuthenticationResult? tok = null;
+        try { tok = await mapAuth.AcquireSilentAsync(acct, GraphAuthenticator.ExchangeScopes); }
+        catch (Exception ex) { Console.WriteLine($"  no Exchange token: {ex.Message.Split('.')[0]}"); }
+        if (tok is null) { Console.WriteLine("  (skipped)"); continue; }
+
+        var mapped = await finder.GetAlternateMailboxesAsync(acct.Username, tok.AccessToken);
+        Console.WriteLine($"  {mapped.Count:N0} mapped mailbox(es):");
+        foreach (var box in mapped)
+            Console.WriteLine($"    [{box.Type,-8}] {box.SmtpAddress,-40} {box.DisplayName}");
     }
     return;
 }
@@ -983,7 +1484,7 @@ var sync = new GraphMailboxSync(graph, () => MailboxDatabase.Open(mailboxDbPath,
     if (p.Phase == GraphMailboxSync.SyncPhase.FolderDone && p.FolderDownloaded > 0)
         Console.WriteLine($"  {p.FolderName}: +{p.FolderDownloaded:N0}" +
             $" (overall {p.OverallDownloaded:N0}/{p.OverallTarget?.ToString("N0") ?? "?"})");
-});
+}, mailboxAddress: upn);
 var stats = await sync.SyncAsync(since);
 stopwatch.Stop();
 

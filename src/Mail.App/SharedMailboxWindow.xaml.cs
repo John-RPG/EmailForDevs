@@ -43,12 +43,23 @@ public partial class SharedMailboxWindow : Window
         /// false when a check was refused. Unknown is not the same as "no".
         /// </summary>
         public bool? CanOpen { get; set; }
+
+        /// <summary>
+        /// What a screen reader announces for the row. Without this the default
+        /// ToString() reports the class name, so every row in the list sounds
+        /// identical — and automation cannot tell them apart either.
+        /// </summary>
+        public override string ToString() =>
+            $"{DisplayName}, {Address}, {Access}";
     }
 
     readonly SqliteConnection _appDb;
     readonly string _repoRoot;
     readonly Func<string, Task<GraphServiceClient>> _graphForAccount;
     readonly Func<string, Task<IReadOnlyList<AutodiscoverMailboxes.AlternateMailbox>>>? _mapped;
+
+    /// <summary>Account the caller was working with, preselected on open.</summary>
+    readonly string? _initialAccount;
     readonly ObservableCollection<CandidateRow> _candidates = [];
     List<MailboxRegistry.MailboxEntry> _accounts = [];
 
@@ -58,15 +69,23 @@ public partial class SharedMailboxWindow : Window
     public SharedMailboxWindow(
         SqliteConnection appDb, string repoRoot,
         Func<string, Task<GraphServiceClient>> graphForAccount,
-        Func<string, Task<IReadOnlyList<AutodiscoverMailboxes.AlternateMailbox>>>? mappedMailboxes = null)
+        Func<string, Task<IReadOnlyList<AutodiscoverMailboxes.AlternateMailbox>>>? mappedMailboxes = null,
+        string? initialAccount = null)
     {
         InitializeComponent();
         _appDb = appDb;
         _repoRoot = repoRoot;
         _graphForAccount = graphForAccount;
         _mapped = mappedMailboxes;
+        _initialAccount = initialAccount;
         CandidateGrid.ItemsSource = _candidates;
-        Loaded += (_, _) => LoadAccounts();
+        Loaded += async (_, _) =>
+        {
+            LoadAccounts();
+            // SelectionChanged does not fire when the index is set before the
+            // window is interactive, so discovery is kicked off explicitly.
+            await DiscoverAsync();
+        };
     }
 
     void LoadAccounts()
@@ -74,8 +93,18 @@ public partial class SharedMailboxWindow : Window
         // Only primary mailboxes can host shared ones: a shared mailbox is
         // reached with its owner's token and has no credentials to lend on.
         _accounts = [.. MailboxRegistry.List(_appDb).Where(m => m.Kind == "primary")];
-        AccountCombo.ItemsSource = _accounts.Select(a => a.Upn).ToList();
-        if (_accounts.Count > 0) AccountCombo.SelectedIndex = 0;
+        var names = _accounts.Select(a => a.Upn).ToList();
+        AccountCombo.ItemsSource = names;
+        if (names.Count == 0) return;
+
+        // Open on the account the caller was looking at. Defaulting to the first
+        // one silently changes the subject: the user picked an account in the
+        // settings tree, and the picker must not quietly answer about a
+        // different one.
+        var index = _initialAccount is null
+            ? 0
+            : names.FindIndex(n => string.Equals(n, _initialAccount, StringComparison.OrdinalIgnoreCase));
+        AccountCombo.SelectedIndex = index >= 0 ? index : 0;
     }
 
     string? SelectedAccount => AccountCombo.SelectedItem as string;

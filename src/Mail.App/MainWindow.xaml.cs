@@ -464,11 +464,14 @@ public partial class MainWindow : Window
         if (_settings is null) return "yyyy-MM-dd HH:mm:ss";
         var chain = mailbox is null ? [SettingTarget.Application] : ChainFor(mailbox);
         var resolved = _settings.Resolve(setting, chain);
-        // Only fall back when the specific format is untouched: a deliberately
-        // set list format must not be overridden by the general one.
-        return resolved.IsDefault
-            ? _settings.GetString(SettingsCatalog.DateTimeFormat, chain)
-            : resolved.Value;
+        if (!resolved.IsDefault) return resolved.Value;
+
+        // Nothing set here, so consider the general format — but only if it was
+        // itself set. Falling back to *its* default would override the specific
+        // default this setting declares, which is the point of having one: the
+        // reading pane wants a long form even though the list wants a short one.
+        var general = _settings.Resolve(SettingsCatalog.DateTimeFormat, chain);
+        return general.IsDefault ? resolved.Value : general.Value;
     }
 
     string ListDateFormat(MailboxHandle? mailbox = null) =>
@@ -1256,6 +1259,12 @@ public partial class MainWindow : Window
         _currentMailbox = mailbox;
         _currentMessageId = messageId;
 
+        // Resolved per message rather than per line: cheap, but the folder-level
+        // chain walk should not run once per recipient.
+        var readerFormat = ReaderDateFormat(mailbox);
+        var showAddresses = _settings?.GetBool(
+            SettingsCatalog.ShowAddressesNotNames, ChainFor(mailbox)) ?? true;
+
         var envelope = new StringBuilder();
         using (var cmd = mailbox.Db.CreateCommand())
         {
@@ -1272,8 +1281,13 @@ public partial class MainWindow : Window
                 var email = reader.GetString(1);
                 var name = reader.IsDBNull(2) ? null : reader.GetString(2);
                 byKind.TryAdd(reader.GetInt64(0), []);
+                // The address is never dropped in favour of a display name: a
+                // name that reads "PayPal" over an address that does not is
+                // exactly the substitution this client exists to refuse.
                 byKind[reader.GetInt64(0)].Add(
-                    string.IsNullOrEmpty(name) || name == email ? email : $"{name} <{email}>");
+                    string.IsNullOrEmpty(name) || name == email
+                        ? email
+                        : showAddresses ? $"{name} <{email}>" : name);
             }
             for (var kind = 0; kind < KindLabels.Length; kind++)
                 if (byKind.TryGetValue(kind, out var list))
@@ -1282,14 +1296,18 @@ public partial class MainWindow : Window
         using (var cmd = mailbox.Db.CreateCommand())
         {
             cmd.CommandText = """
-                SELECT subject, datetime(coalesce(sent_at, received_at), 'unixepoch', 'localtime')
+                SELECT subject, coalesce(sent_at, received_at)
                 FROM messages WHERE id = @id;
                 """;
             cmd.Parameters.AddWithValue("@id", messageId);
             using var reader = cmd.ExecuteReader();
             if (reader.Read())
             {
-                envelope.AppendLine($"{"Date",-8}: {(reader.IsDBNull(1) ? "" : reader.GetString(1))}");
+                var when = reader.IsDBNull(1)
+                    ? ""
+                    : DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(1))
+                        .ToLocalTime().ToString(readerFormat);
+                envelope.AppendLine($"{"Date",-8}: {when}");
                 envelope.AppendLine($"{"Subject",-8}: {(reader.IsDBNull(0) ? "" : reader.GetString(0))}");
             }
         }

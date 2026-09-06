@@ -240,6 +240,28 @@ public sealed class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void A_specific_default_is_not_overridden_by_the_general_default()
+    {
+        // The reading pane declares a long date form and the list a short one.
+        // Falling back to the general format when nothing is set would erase
+        // both, which is what happened before this was fixed.
+        Assert.Equal("ddd d MMM yyyy, HH:mm:ss", SettingsCatalog.ReaderDateFormat.Default);
+        Assert.Equal("yyyy-MM-dd HH:mm:ss", SettingsCatalog.ListDateFormat.Default);
+        Assert.NotEqual(
+            SettingsCatalog.ReaderDateFormat.Default,
+            SettingsCatalog.ListDateFormat.Default);
+
+        // Both unset: each keeps its own default rather than converging.
+        Assert.True(_settings.Resolve(SettingsCatalog.ReaderDateFormat, Chain).IsDefault);
+        Assert.True(_settings.Resolve(SettingsCatalog.ListDateFormat, Chain).IsDefault);
+
+        // The general format set explicitly is a deliberate instruction, so it
+        // does apply to a specific format the user has not touched.
+        _settings.Set(SettingsCatalog.DateTimeFormat.Key, SettingTarget.Application, "s");
+        Assert.False(_settings.Resolve(SettingsCatalog.DateTimeFormat, Chain).IsDefault);
+    }
+
+    [Fact]
     public void Risky_settings_explain_the_risk()
     {
         foreach (var setting in SettingsCatalog.All.Where(s =>

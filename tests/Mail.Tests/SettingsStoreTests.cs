@@ -190,6 +190,56 @@ public sealed class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Invalid_values_are_rejected_before_they_are_stored()
+    {
+        // An unparseable value would be saved and then silently ignored on every
+        // read, leaving a setting that looks set but does nothing.
+        Assert.False(SettingsCatalog.MaxConcurrentDownloads.IsValid("ser6", out var intError));
+        Assert.NotEmpty(intError);
+        Assert.True(SettingsCatalog.MaxConcurrentDownloads.IsValid("6", out _));
+
+        Assert.False(SettingsCatalog.AllowScripts.IsValid("yes", out _));
+        Assert.True(SettingsCatalog.AllowScripts.IsValid("true", out _));
+
+        Assert.False(SettingsCatalog.RowDensity.IsValid("enormous", out var enumError));
+        Assert.Contains("single", enumError);
+        Assert.True(SettingsCatalog.RowDensity.IsValid("two-line", out _));
+    }
+
+    [Fact]
+    public void Date_formats_are_validated_as_format_strings()
+    {
+        // A bad format throws at render time, a long way from where it was set.
+        Assert.True(SettingsCatalog.ListDateFormat.IsValid("yyyy-MM-dd HH:mm:ss", out _));
+        Assert.True(SettingsCatalog.ReaderDateFormat.IsValid("ddd d MMM yyyy, HH:mm:ss", out _));
+        Assert.False(SettingsCatalog.ListDateFormat.IsValid("yyyy-MM-dd \\", out _));
+    }
+
+    [Fact]
+    public void List_and_reader_dates_resolve_independently()
+    {
+        _settings.Set(SettingsCatalog.ListDateFormat.Key, SettingTarget.Application, "HH:mm");
+        Assert.Equal("HH:mm",
+            _settings.Resolve(SettingsCatalog.ListDateFormat, Chain).Value);
+        // The reader keeps its own default rather than following the list.
+        Assert.True(_settings.Resolve(SettingsCatalog.ReaderDateFormat, Chain).IsDefault);
+    }
+
+    [Fact]
+    public void Describe_does_not_name_a_level_that_set_nothing()
+    {
+        // sync.enabled has no Application scope, so an unset value used to report
+        // its root scope as the source — claiming a level had set it.
+        var resolved = _settings.Resolve(SettingsCatalog.SyncEnabled, Chain);
+        Assert.True(resolved.IsDefault);
+        Assert.Equal("built-in default", resolved.Describe());
+
+        _settings.Set(SettingsCatalog.SyncEnabled.Key, SettingTarget.Mailbox(7), "false");
+        Assert.Equal("set at Mailbox",
+            _settings.Resolve(SettingsCatalog.SyncEnabled, Chain).Describe());
+    }
+
+    [Fact]
     public void Risky_settings_explain_the_risk()
     {
         foreach (var setting in SettingsCatalog.All.Where(s =>

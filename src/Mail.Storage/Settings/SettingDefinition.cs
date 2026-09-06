@@ -49,6 +49,43 @@ public sealed record SettingDefinition(
 {
     public bool AppliesTo(SettingScope scope) => Scopes.Contains(scope);
 
+    /// <summary>
+    /// Whether a value is storable for this setting. Checked on write rather
+    /// than only on read: a value that cannot be parsed silently falls back to
+    /// the default at every read, so the setting appears set while doing
+    /// nothing — the worst of both. Rejecting it at the point of entry lets the
+    /// UI say so while the user is still looking at the field.
+    /// </summary>
+    public bool IsValid(string value, out string error)
+    {
+        error = "";
+        switch (Kind)
+        {
+            case SettingKind.Bool when !bool.TryParse(value, out _):
+                error = "Expected true or false.";
+                return false;
+            case SettingKind.Int when !int.TryParse(
+                    value, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out _):
+                error = "Expected a whole number.";
+                return false;
+            case SettingKind.Enum when Choices is not null &&
+                    !Choices.Contains(value, StringComparer.OrdinalIgnoreCase):
+                error = $"Expected one of: {string.Join(", ", Choices)}.";
+                return false;
+            case SettingKind.String when Key.EndsWith("datetime_format", StringComparison.Ordinal):
+                // A bad format string throws at render time, far from here.
+                try { _ = DateTimeOffset.Now.ToString(value); }
+                catch (FormatException)
+                {
+                    error = "Not a valid .NET date/time format string.";
+                    return false;
+                }
+                break;
+        }
+        return true;
+    }
+
     /// <summary>The broadest level this may be set at — where its default lives.</summary>
     public SettingScope RootScope => Scopes.Max();
 }

@@ -112,12 +112,34 @@ public static class SettingsCatalog
 
     // ---- display ------------------------------------------------------------
 
+    /// <summary>
+    /// The list wants a scannable, fixed-width column; the reader is read as
+    /// prose and can afford a friendlier form. One setting could not serve both,
+    /// so they are separate — <see cref="DateTimeFormat"/> keeps the old key and
+    /// remains the fallback for anywhere neither applies.
+    /// </summary>
     public static readonly SettingDefinition DateTimeFormat = new(
         "display.datetime_format",
         "Date and time format",
-        ".NET format string used in the message list and reader.",
+        ".NET format string used anywhere without a more specific format.",
         SettingKind.String, "yyyy-MM-dd HH:mm:ss",
         [Account, Application],
+        Category: "Display");
+
+    public static readonly SettingDefinition ListDateFormat = new(
+        "display.list_datetime_format",
+        "Date format — message list",
+        "Used in the Received column. Sortable, fixed-width forms read best here.",
+        SettingKind.String, "yyyy-MM-dd HH:mm:ss",
+        [Folder, Mailbox, Account, Application],
+        Category: "Display");
+
+    public static readonly SettingDefinition ReaderDateFormat = new(
+        "display.reader_datetime_format",
+        "Date format — reading pane",
+        "Used in the message header, where a longer form is easier to read.",
+        SettingKind.String, "ddd d MMM yyyy, HH:mm:ss",
+        [Folder, Mailbox, Account, Application],
         Category: "Display");
 
     public static readonly SettingDefinition ShowAddressesNotNames = new(
@@ -165,6 +187,97 @@ public static class SettingsCatalog
         [Account, Application],
         Choices: ["html", "plain"],
         Category: "Composing");
+
+    public static readonly SettingDefinition SignatureSource = new(
+        "compose.signature_source",
+        "Signature source",
+        "Where the signature comes from. Outlook stores signatures in the mailbox " +
+        "(\"roaming\" signatures), so they follow the account between machines; " +
+        "the local option keeps one specific to this install.",
+        SettingKind.Enum, "roaming if available",
+        [Account, Application],
+        Choices: ["roaming if available", "roaming only", "local only", "none"],
+        Category: "Composing");
+
+    public static readonly SettingDefinition SignatureText = new(
+        "compose.signature_local",
+        "Local signature",
+        "Used when the source is local, or when roaming is unavailable. Supports " +
+        "plain text; HTML is used as-is when composing in HTML.",
+        SettingKind.String, "",
+        [Account, Application],
+        Category: "Composing");
+
+    public static readonly SettingDefinition SignatureOnReply = new(
+        "compose.signature_on_reply",
+        "Signature on replies and forwards",
+        "Whether to append the signature when replying, not only on new mail.",
+        SettingKind.Bool, "false",
+        [Account, Application],
+        Category: "Composing");
+
+    public static readonly SettingDefinition ReplyQuoteStyle = new(
+        "compose.reply_quote_style",
+        "Quote style",
+        "How the original message is included in a reply.",
+        SettingKind.Enum, "below with header",
+        [Account, Application],
+        Choices: ["below with header", "below plain", "inline prefixed", "none"],
+        Category: "Composing");
+
+    public static readonly SettingDefinition ReplyAboveQuote = new(
+        "compose.reply_above_quote",
+        "Start reply above the quote",
+        "Place the cursor above the quoted text rather than below it.",
+        SettingKind.Bool, "true",
+        [Account, Application],
+        Category: "Composing");
+
+    public static readonly SettingDefinition SendDelaySeconds = new(
+        "send.delay_seconds",
+        "Undo send window (seconds)",
+        "Hold outgoing mail this long before sending, so it can be recalled. " +
+        "Zero sends immediately.",
+        SettingKind.Int, "0",
+        [Account, Application],
+        Category: "Sending");
+
+    public static readonly SettingDefinition SaveToSent = new(
+        "send.save_to_sent",
+        "Save copies to Sent Items",
+        "Ask the server to file a copy of each sent message.",
+        SettingKind.Bool, "true",
+        [Account, Application],
+        Category: "Sending");
+
+    public static readonly SettingDefinition RequestReadReceipts = new(
+        "send.request_read_receipts",
+        "Request read receipts",
+        "Ask recipients' clients to confirm the message was opened.",
+        SettingKind.Bool, "false",
+        [Account, Application],
+        Category: "Sending");
+
+    public static readonly SettingDefinition SendReadReceipts = new(
+        "send.send_read_receipts",
+        "Respond to read receipt requests",
+        "Whether to answer senders who ask to be told you opened their mail.",
+        SettingKind.Enum, "never",
+        [Account, Application],
+        Risk: SettingRisk.Security,
+        Warning: "Answering confirms you read the message, and the time you did. " +
+                 "Senders can use this to verify an address is live.",
+        Choices: ["never", "ask", "always"],
+        Category: "Sending");
+
+    public static readonly SettingDefinition MessageColumns = new(
+        "display.message_columns",
+        "Message list columns",
+        "Ordered, comma-separated column keys: status, fromname, fromaddress, to, " +
+        "received, size, subject.",
+        SettingKind.String, "status,fromname,fromaddress,to,received,size,subject",
+        [Folder, Mailbox, Account, Application],
+        Category: "Display");
 
     public static readonly SettingDefinition PreserveMessageId = new(
         "compose.derive_message_id_from_sender",
@@ -216,8 +329,12 @@ public static class SettingsCatalog
     [
         SyncPolicy, SyncWindowMonths, SyncEnabled, MaxConcurrentDownloads, PurgeLocalOnRemove,
         LoadRemoteImages, AllowScripts, MarkReadDelayMs, DefaultReaderTab,
-        DateTimeFormat, ShowAddressesNotNames, QuietFolderDays, RowDensity, ShowInFavourites,
+        DateTimeFormat, ListDateFormat, ReaderDateFormat, ShowAddressesNotNames,
+        QuietFolderDays, RowDensity, ShowInFavourites, MessageColumns,
         DefaultComposeFormat, PreserveMessageId,
+        SignatureSource, SignatureText, SignatureOnReply,
+        ReplyQuoteStyle, ReplyAboveQuote,
+        SendDelaySeconds, SaveToSent, RequestReadReceipts, SendReadReceipts,
         LogLevel, LogGraphRequests, KeepRawMime,
     ];
 

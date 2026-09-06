@@ -16,9 +16,18 @@ public sealed class SettingsStore(SqliteConnection appDb)
     /// <param name="Source">
     /// The level the value actually came from, so the UI can say "inherited from
     /// Account" rather than presenting an inherited value as if it were set here.
+    /// Meaningless when <paramref name="IsDefault"/> is true: nothing set it, so
+    /// there is no source level to name. Read <see cref="Describe"/> instead of
+    /// formatting Source directly.
     /// </param>
     public readonly record struct Resolved(
-        string Value, SettingScope Source, bool IsDefault);
+        string Value, SettingScope Source, bool IsDefault)
+    {
+        /// <summary>Where the value came from, in words, without claiming a
+        /// level set something it did not.</summary>
+        public string Describe() =>
+            IsDefault ? "built-in default" : $"set at {Source}";
+    }
 
     /// <summary>
     /// The value in force for a target, walking outwards until a level has one.

@@ -17,7 +17,21 @@ public static class AppDatabase
         return conn;
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4, V5];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4, V5, V6];
+
+    const string V6 = """
+        -- Integer settings could be stored unparseable before validation was
+        -- added on write (a UI binding wrote back mid-edit and produced values
+        -- like "ser6"). Such a row reads as the default anyway, so deleting it
+        -- changes no behaviour — it only stops the settings screen showing a
+        -- value that is not in force.
+        DELETE FROM settings
+        WHERE key IN ('sync.window_months', 'sync.max_concurrent_downloads',
+                      'read.mark_read_delay_ms', 'display.quiet_folder_days',
+                      'send.delay_seconds')
+          AND CAST(value AS INTEGER) = 0
+          AND value NOT IN ('0', '-0');
+        """;
 
     const string V5 = """
         -- V3 carried the old discovery_enabled flag over as granted capabilities,

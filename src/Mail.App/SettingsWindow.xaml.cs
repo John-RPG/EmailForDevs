@@ -123,7 +123,7 @@ public partial class SettingsWindow : Window
             SourceText = IsOverridden
                 ? "Set at this level."
                 : resolved.IsDefault
-                    ? $"Inherited — built-in default ({Definition.Default})."
+                    ? $"Not set anywhere — using the built-in default ({Definition.Default})."
                     : $"Inherited from {resolved.Source}.";
             Raise(nameof(IsOverridden));
             Raise(nameof(OverriddenVisibility));
@@ -310,6 +310,16 @@ public partial class SettingsWindow : Window
         if (_loading || sender is not FrameworkElement element || element.Tag is not string key) return;
         var row = _rows.FirstOrDefault(r => r.Key == key);
         if (row is null || _selected is null) return;
+
+        // Refuse what cannot be stored, while the user is still looking at the
+        // field. An unparseable value would otherwise be saved and then silently
+        // ignored on every read, leaving the setting looking set but inert.
+        if (!row.Definition.IsValid(row.TextValue, out var error))
+        {
+            StatusLabel.Text = $"{row.Name}: {error} Value not saved.";
+            row.Refresh();   // put the stored value back in the editor
+            return;
+        }
 
         // Writing on edit rather than behind a Save button keeps the "set here"
         // marker honest: it always reflects the store, never pending intent.

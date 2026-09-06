@@ -213,6 +213,57 @@ if (args.Contains("scopecheck", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Contains("provewiring", StringComparer.OrdinalIgnoreCase))
+{
+    // Proves the app reads settings rather than the legacy columns, by resolving
+    // exactly what the sync loop resolves for each mailbox.
+    var store = new SettingsStore(appDb);
+    Console.WriteLine("Effective sync settings per mailbox (as the app resolves them):");
+    foreach (var entry in MailboxRegistry.List(appDb, enabledOnly: true))
+    {
+        SettingTarget[] chain =
+        [
+            SettingTarget.Mailbox(entry.Id),
+            SettingTarget.Account(entry.AccountId),
+            SettingTarget.Application,
+        ];
+        var policy = store.Resolve(SettingsCatalog.SyncPolicy, chain);
+        var window = store.Resolve(SettingsCatalog.SyncWindowMonths, chain);
+        var conc = store.Resolve(SettingsCatalog.MaxConcurrentDownloads, chain);
+        var enabled = store.Resolve(SettingsCatalog.SyncEnabled, chain);
+        var listFmt = store.Resolve(SettingsCatalog.ListDateFormat, chain);
+
+        Console.WriteLine($"  {entry.Upn}");
+        Console.WriteLine($"      policy      {policy.Value,-14} (from {policy.Source})");
+        Console.WriteLine($"      window      {window.Value,-14} (from {window.Source})");
+        Console.WriteLine($"      concurrency {conc.Value,-14} (from {conc.Source})");
+        Console.WriteLine($"      enabled     {enabled.Value,-14} (from {enabled.Source})");
+        Console.WriteLine($"      list dates  {listFmt.Value,-14} (from {listFmt.Source})");
+        Console.WriteLine($"      legacy columns said: policy={entry.Policy} window={entry.WindowMonths}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("Favourites now stored as folder settings:");
+    using (var fav = appDb.CreateCommand())
+    {
+        fav.CommandText = """
+            SELECT target FROM settings
+            WHERE key = 'display.favourite' AND value = 'true' ORDER BY target;
+            """;
+        using var reader = fav.ExecuteReader();
+        var any = false;
+        while (reader.Read()) { any = true; Console.WriteLine($"      folder {reader.GetString(0)}"); }
+        if (!any) Console.WriteLine("      (none)");
+    }
+
+    using (var legacy = appDb.CreateCommand())
+    {
+        legacy.CommandText = "SELECT count(*) FROM ui_state WHERE key = 'favourites';";
+        Console.WriteLine($"  legacy ui_state blob rows remaining: {legacy.ExecuteScalar()}");
+    }
+    return;
+}
+
 if (args.Contains("settings", StringComparer.OrdinalIgnoreCase))
 {
     // Walks the real store against the live profile, so inheritance is checked

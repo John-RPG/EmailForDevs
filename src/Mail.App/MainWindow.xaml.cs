@@ -16,6 +16,7 @@ using Mail.Core.Ingest;
 using Mail.Core.Search;
 using Mail.Storage;
 using Mail.Storage.Database;
+using Mail.Storage.Settings;
 using Mail.Storage.Security;
 using Mail.Sync.Auth;
 using Microsoft.Identity.Client;
@@ -46,6 +47,9 @@ public partial class MainWindow : Window
     {
         /// <summary>Registry row id, for config edits and removal.</summary>
         public long Id { get; init; }
+
+        /// <summary>Owning account row id, for resolving settings up the chain.</summary>
+        public long AccountId { get; init; }
 
         /// <summary>
         /// The signed-in account whose token opens this mailbox. For a shared
@@ -135,6 +139,9 @@ public partial class MainWindow : Window
     /// <summary>Where sync currently is, so a failure can say where it stopped.</summary>
     string _syncingMailbox = "";
     string _syncingFolder = "";
+
+    /// <summary>Resolves settings through folder → mailbox → account → application.</summary>
+    SettingsStore? _settings;
     long _currentMessageId;
 
     public MainWindow()
@@ -202,6 +209,7 @@ public partial class MainWindow : Window
             var keyStore = new ProfileKeyStore(Path.Combine(_scratchRoot, "profile"));
             var masterKey = keyStore.Unlock();
             _appDb = AppDatabase.Open(Path.Combine(_scratchRoot, "profile", "app.db"), masterKey);
+            _settings = new SettingsStore(_appDb);
 
             LoadMailboxHandles(repoRoot);
             LoadFavourites();
@@ -412,6 +420,48 @@ public partial class MainWindow : Window
             SelectNode(restore);
     }
 
+    /// <summary>
+    /// Resolution chain for a mailbox: itself, its account, then the
+    /// application. Folder-scoped settings add the folder in front.
+    /// </summary>
+    static SettingTarget[] ChainFor(MailboxHandle mailbox) =>
+    [
+        SettingTarget.Mailbox(mailbox.Id),
+        SettingTarget.Account(mailbox.AccountId),
+        SettingTarget.Application,
+    ];
+
+    static SettingTarget[] ChainFor(MailboxHandle mailbox, long folderId) =>
+    [
+        SettingTarget.Folder(mailbox.Id, folderId),
+        SettingTarget.Mailbox(mailbox.Id),
+        SettingTarget.Account(mailbox.AccountId),
+        SettingTarget.Application,
+    ];
+
+    /// <summary>
+    /// The date/time format in force for a place. The list wants a scannable
+    /// fixed-width column and the reader reads as prose, so they resolve
+    /// separately; both fall back to the general format.
+    /// </summary>
+    string DateFormat(SettingDefinition setting, MailboxHandle? mailbox = null)
+    {
+        if (_settings is null) return "yyyy-MM-dd HH:mm:ss";
+        var chain = mailbox is null ? [SettingTarget.Application] : ChainFor(mailbox);
+        var resolved = _settings.Resolve(setting, chain);
+        // Only fall back when the specific format is untouched: a deliberately
+        // set list format must not be overridden by the general one.
+        return resolved.IsDefault
+            ? _settings.GetString(SettingsCatalog.DateTimeFormat, chain)
+            : resolved.Value;
+    }
+
+    string ListDateFormat(MailboxHandle? mailbox = null) =>
+        DateFormat(SettingsCatalog.ListDateFormat, mailbox);
+
+    string ReaderDateFormat(MailboxHandle? mailbox = null) =>
+        DateFormat(SettingsCatalog.ReaderDateFormat, mailbox);
+
     /// <summary>Full path per folder (/Organised/GumpyGoblin) for favourite labels.</summary>
     static Dictionary<long, string> BuildFolderPaths(List<FolderRow> rows)
     {
@@ -510,17 +560,25 @@ public partial class MainWindow : Window
     List<long> FavouritesFor(string upn) =>
         _favourites.TryGetValue(upn, out var list) ? list : [];
 
+    /// <summary>
+    /// Reads favourites from folder-scoped settings, migrating the old ui_state
+    /// JSON blob on first run. Keeping them as settings means they appear in the
+    /// settings window like anything else, rather than being invisible state
+    /// only this window knows how to write.
+    /// </summary>
     void LoadFavourites()
     {
         _favourites.Clear();
-        if (_appDb is null) return;
+        if (_appDb is null || _settings is null) return;
         try
         {
-            using var cmd = _appDb.CreateCommand();
-            cmd.CommandText = "SELECT value FROM ui_state WHERE key = 'favourites';";
-            if (cmd.ExecuteScalar() is string json && json.Length > 0)
-                _favourites = System.Text.Json.JsonSerializer
-                    .Deserialize<Dictionary<string, List<long>>>(json) ?? [];
+            MigrateFavouritesFromUiState();
+
+            foreach (var mailbox in _mailboxes)
+            {
+                var ids = FavouriteFolderIds(mailbox);
+                if (ids.Count > 0) _favourites[mailbox.Upn] = ids;
+            }
         }
         catch (Exception ex)
         {
@@ -528,18 +586,88 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>Folder ids flagged as favourites for one mailbox.</summary>
+    List<long> FavouriteFolderIds(MailboxHandle mailbox)
+    {
+        var result = new List<long>();
+        if (_appDb is null) return result;
+        using var cmd = _appDb.CreateCommand();
+        // Folder targets are "{mailboxId}:{folderId}", so one query per mailbox
+        // beats resolving each folder in turn.
+        cmd.CommandText = """
+            SELECT target FROM settings
+            WHERE key = @k AND scope = 0 AND value = 'true' AND target LIKE @prefix;
+            """;
+        cmd.Parameters.AddWithValue("@k", SettingsCatalog.ShowInFavourites.Key);
+        cmd.Parameters.AddWithValue("@prefix", $"{mailbox.Id}:%");
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var parts = reader.GetString(0).Split(':');
+            if (parts.Length == 2 && long.TryParse(parts[1], out var folderId))
+                result.Add(folderId);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// One-time move of the old JSON blob into settings. The blob was keyed by
+    /// UPN and held folder ids, so each entry becomes a folder-scoped override.
+    /// </summary>
+    void MigrateFavouritesFromUiState()
+    {
+        if (_appDb is null || _settings is null) return;
+        string? json;
+        using (var read = _appDb.CreateCommand())
+        {
+            read.CommandText = "SELECT value FROM ui_state WHERE key = 'favourites';";
+            json = read.ExecuteScalar() as string;
+        }
+        if (string.IsNullOrWhiteSpace(json)) return;
+
+        var legacy = System.Text.Json.JsonSerializer
+            .Deserialize<Dictionary<string, List<long>>>(json) ?? [];
+        var moved = 0;
+        foreach (var (upn, folderIds) in legacy)
+        {
+            var mailbox = _mailboxes.FirstOrDefault(m =>
+                string.Equals(m.Upn, upn, StringComparison.OrdinalIgnoreCase));
+            if (mailbox is null) continue;
+            foreach (var folderId in folderIds)
+            {
+                _settings.Set(SettingsCatalog.ShowInFavourites.Key,
+                    SettingTarget.Folder(mailbox.Id, folderId), "true");
+                moved++;
+            }
+        }
+
+        // Remove the blob only once its contents are safely in settings, so an
+        // interrupted migration retries rather than losing the favourites.
+        using var clear = _appDb.CreateCommand();
+        clear.CommandText = "DELETE FROM ui_state WHERE key = 'favourites';";
+        clear.ExecuteNonQuery();
+        if (moved > 0)
+            Log(LogLevel.Debug, $"Moved {moved:N0} favourite(s) into per-folder settings.");
+    }
+
     void SaveFavourites()
     {
-        if (_appDb is null) return;
+        if (_settings is null) return;
         try
         {
-            using var cmd = _appDb.CreateCommand();
-            cmd.CommandText = """
-                INSERT INTO ui_state(key, value) VALUES('favourites', @v)
-                ON CONFLICT(key) DO UPDATE SET value = @v;
-                """;
-            cmd.Parameters.AddWithValue("@v", System.Text.Json.JsonSerializer.Serialize(_favourites));
-            cmd.ExecuteNonQuery();
+            // Write the flag per folder; the settings window shows the same value.
+            foreach (var mailbox in _mailboxes)
+            {
+                var wanted = FavouritesFor(mailbox.Upn).ToHashSet();
+                var existing = FavouriteFolderIds(mailbox).ToHashSet();
+
+                foreach (var folderId in wanted.Except(existing))
+                    _settings.Set(SettingsCatalog.ShowInFavourites.Key,
+                        SettingTarget.Folder(mailbox.Id, folderId), "true");
+                foreach (var folderId in existing.Except(wanted))
+                    _settings.Clear(SettingsCatalog.ShowInFavourites.Key,
+                        SettingTarget.Folder(mailbox.Id, folderId));
+            }
         }
         catch (Exception ex)
         {
@@ -794,6 +922,9 @@ public partial class MainWindow : Window
 
     void FillList(MailboxHandle mailbox, SqliteCommand cmd)
     {
+        // Resolved once per fill rather than per row: the chain walk is cheap
+        // but a five-thousand-row list makes anything per-row worth avoiding.
+        var dateFormat = ListDateFormat(mailbox);
         var rows = new List<MessageRow>();
         using (var reader = cmd.ExecuteReader())
         {
@@ -818,7 +949,7 @@ public partial class MainWindow : Window
                     Received: reader.IsDBNull(2)
                         ? ""
                         : DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2))
-                            .ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+                            .ToLocalTime().ToString(dateFormat),
                     SizeKb: sizeVal.ToString("N0"),
                     SizeVal: sizeVal,
                     Subject: reader.IsDBNull(1) ? "" : reader.GetString(1),
@@ -1689,6 +1820,7 @@ public partial class MainWindow : Window
                 MailboxDatabase.Open(dbPath, entry.Dek))
             {
                 Id = entry.Id,
+                AccountId = entry.AccountId,
                 AccountUpn = entry.AccountUpn,
                 Kind = entry.Kind,
                 DisplayName = entry.DisplayName,
@@ -1711,8 +1843,23 @@ public partial class MainWindow : Window
             {
                 _syncingMailbox = mailbox.Upn;
                 _syncingFolder = "";
+
+                // Settings win over the legacy mailbox columns: the columns are
+                // only a fallback until every profile has been through V4.
+                var chain = ChainFor(mailbox);
+                var policy = _settings?.GetString(SettingsCatalog.SyncPolicy, chain) ?? mailbox.Policy;
+                var windowMonths = _settings?.GetInt(SettingsCatalog.SyncWindowMonths, chain)
+                    ?? mailbox.WindowMonths;
+                if (_settings is not null && !_settings.GetBool(SettingsCatalog.SyncEnabled, chain))
+                {
+                    Log(LogLevel.Info, $"{mailbox.Upn}: skipped — sync is turned off for it.");
+                    continue;
+                }
+
                 var graph = await GetGraphAsync(mailbox);
-                var since = mailbox.Since;
+                var since = policy == "MirrorServer" || windowMonths <= 0
+                    ? (DateTimeOffset?)null
+                    : DateTimeOffset.UtcNow.AddMonths(-windowMonths);
                 var stopwatch = Stopwatch.StartNew();
                 var lastTreeUpdate = 0;
                 var lastDownloadLog = 0;
@@ -1804,8 +1951,10 @@ public partial class MainWindow : Window
                     }
                 });
 
+                var concurrency = _settings?.GetInt(SettingsCatalog.MaxConcurrentDownloads, chain) ?? 4;
                 var sync = new GraphMailboxSync(
                     graph, () => MailboxDatabase.Open(mailbox.DbPath, mailbox.Dek), OnProgress,
+                    maxConcurrentDownloads: Math.Clamp(concurrency, 1, 16),
                     mailboxAddress: mailbox.Upn);
                 // Task.Run keeps the engine (and its await continuations — page
                 // classification, MIME parsing) off the UI dispatcher entirely.

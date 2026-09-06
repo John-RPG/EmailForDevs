@@ -123,7 +123,7 @@ if (args.Length > 0 && args[0].Equals("sharedstate", StringComparison.OrdinalIgn
             Console.WriteLine($"  messages: {msgs.ExecuteScalar()}");
             using var list = db.CreateCommand();
             list.CommandText = """
-                SELECT f.name, f.server_total,
+                SELECT f.name, f.total_count,
                        (SELECT count(*) FROM messages WHERE folder_id = f.id)
                 FROM folders f ORDER BY f.name LIMIT 15;
                 """;
@@ -166,6 +166,24 @@ if (args.Length > 0 && args[0].Equals("idprobe", StringComparison.OrdinalIgnoreC
     await Try("graph.Users[smtp].MailFolders", async () => await g.Users["shared@example.com"].MailFolders.GetAsync(rc => rc.QueryParameters.Top = 1));
     await Try("graph.Users[smtp].MailFolders[inbox]", async () => await g.Users["shared@example.com"].MailFolders["inbox"].GetAsync());
     await Try("graph.Users[smtp].Messages", async () => await g.Users["shared@example.com"].Messages.GetAsync(rc => rc.QueryParameters.Top = 1));
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("order", StringComparison.OrdinalIgnoreCase))
+{
+    var rest = args.Skip(1).ToList();
+    if (rest.Count == 2 && int.TryParse(rest[1], out var delta))
+    {
+        var ordered = MailboxRegistry.ListAccounts(appDb);
+        var move = ordered.FirstOrDefault(a =>
+            a.Upn.Contains(rest[0], StringComparison.OrdinalIgnoreCase));
+        if (move.Id == 0) { Console.WriteLine($"no account matching '{rest[0]}'"); return; }
+        var ok = MailboxRegistry.MoveAccount(appDb, move.Id, delta);
+        Console.WriteLine(ok ? $"moved {move.Upn} by {delta}" : "at the end already");
+    }
+    Console.WriteLine("Account order:");
+    foreach (var a in MailboxRegistry.ListAccounts(appDb))
+        Console.WriteLine($"  {a.Id,3}  {a.Upn}");
     return;
 }
 

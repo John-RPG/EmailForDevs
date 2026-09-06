@@ -128,7 +128,6 @@ public partial class MainWindow : Window
     System.Windows.Threading.DispatcherTimer? _autoSyncTimer;
     SqliteConnection? _appDb;
     string? _scratchRoot;
-    bool _syncRunning;
     bool _webViewReady;
     string? _currentHtml;
     MailboxHandle? _currentMailbox;
@@ -136,9 +135,15 @@ public partial class MainWindow : Window
     /// <summary>Shared for Autodiscover; one per process, not one per call.</summary>
     readonly HttpClient _http = new();
 
-    /// <summary>Where sync currently is, so a failure can say where it stopped.</summary>
-    string _syncingMailbox = "";
-    string _syncingFolder = "";
+    /// <summary>
+    /// Mailboxes with a sync in flight. Per mailbox rather than one global flag:
+    /// Graph throttles per mailbox, so two mailboxes do not compete, and a newly
+    /// added one should not wait behind a six-figure backfill of another.
+    /// </summary>
+    readonly HashSet<string> _syncing = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Folder each mailbox is on, so a failure can say where it stopped.</summary>
+    readonly Dictionary<string, string> _syncingFolders = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Resolves settings through folder → mailbox → account → application.</summary>
     SettingsStore? _settings;
@@ -220,7 +225,9 @@ public partial class MainWindow : Window
     /// </summary>
     void OnWindowActivated(object? sender, EventArgs e)
     {
-        if (_settings is null || _syncRunning) return;
+        bool busy;
+        lock (_syncing) busy = _syncing.Count > 0;
+        if (_settings is null || busy) return;
         if (!_settings.GetBool(SettingsCatalog.SyncOnFocus, SettingTarget.Application)) return;
         if (DateTimeOffset.UtcNow - _lastFocusSync < TimeSpan.FromSeconds(30)) return;
         _lastFocusSync = DateTimeOffset.UtcNow;
@@ -1925,17 +1932,80 @@ public partial class MainWindow : Window
         if (!window.ChangesApplied)
             return;
 
-        // Mailboxes or permissions may have changed, so reopen everything rather
-        // than guessing which parts are still valid.
-        Log("Settings changed — reloading mailboxes.");
+        // Reconcile rather than reopening everything: closing a mailbox that is
+        // mid-sync to add an unrelated one would throw away its progress, and a
+        // new mailbox should not wait for that either.
+        Log("Settings changed.");
         StartAutoSync();     // the interval may have changed
         StartLiveUpdates();  // and so may the accounts or the live-update setting
-        foreach (var mailbox in _mailboxes)
+        ReconcileMailboxes();
+    }
+
+    /// <summary>
+    /// Brings the open mailboxes in line with the registry: opens ones that were
+    /// added, closes ones that were removed, and leaves the rest alone. Newly
+    /// added mailboxes start syncing straight away rather than queueing behind
+    /// whatever else is running.
+    /// </summary>
+    void ReconcileMailboxes()
+    {
+        if (_appDb is null || _scratchRoot is null) return;
+        var repoRoot = Path.GetDirectoryName(_scratchRoot)!;
+        var registry = MailboxRegistry.List(_appDb, enabledOnly: true);
+
+        var wanted = registry.Select(e => e.Upn).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var open = _mailboxes.Select(m => m.Upn).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        // Removed or disabled: close and forget.
+        foreach (var mailbox in _mailboxes.Where(m => !wanted.Contains(m.Upn)).ToList())
+        {
+            Log($"Closing {mailbox.Upn}.");
             mailbox.Db.Dispose();
-        _mailboxes.Clear();
-        _graphClients.Clear();
-        ReloadMailboxes();
-        StartSync();
+            _mailboxes.Remove(mailbox);
+        }
+
+        // Added: open and start it immediately.
+        var added = new List<MailboxHandle>();
+        foreach (var entry in registry.Where(e => !open.Contains(e.Upn)))
+        {
+            var dbPath = Path.IsPathRooted(entry.DbPath)
+                ? entry.DbPath
+                : Path.Combine(repoRoot, entry.DbPath);
+            try
+            {
+                var handle = new MailboxHandle(
+                    entry.Upn, dbPath, entry.Dek, entry.WindowMonths, entry.Policy,
+                    MailboxDatabase.Open(dbPath, entry.Dek))
+                {
+                    Id = entry.Id,
+                    AccountId = entry.AccountId,
+                    AccountUpn = entry.AccountUpn,
+                    Kind = entry.Kind,
+                    DisplayName = entry.DisplayName,
+                };
+                _mailboxes.Add(handle);
+                added.Add(handle);
+                Log($"Opened {entry.Upn} ({entry.Kind}).");
+            }
+            catch (Exception ex)
+            {
+                Log(LogLevel.Error, $"Could not open {entry.Upn}: {ex.Message}");
+            }
+        }
+
+        // Registry order may have changed even when the set did not — moving an
+        // account reorders the tree without adding or removing anything.
+        var order = registry.Select((e, i) => (e.Upn, Index: i))
+            .ToDictionary(x => x.Upn, x => x.Index, StringComparer.OrdinalIgnoreCase);
+        _mailboxes.Sort((a, b) =>
+            order.GetValueOrDefault(a.Upn, int.MaxValue)
+                 .CompareTo(order.GetValueOrDefault(b.Upn, int.MaxValue)));
+
+        RebuildTreePreservingState();
+        StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
+
+        foreach (var mailbox in added)
+            _ = SyncMailboxAsync(mailbox);
     }
 
     /// <summary>Signs a new account in and registers its mailbox.</summary>
@@ -2175,19 +2245,32 @@ public partial class MainWindow : Window
 
     async void StartSync()
     {
-        if (_syncRunning || _scratchRoot is null || _mailboxes.Count == 0)
+        if (_scratchRoot is null || _mailboxes.Count == 0)
             return;
-        _syncRunning = true;
-        SyncButton.IsEnabled = false;
-        SyncBar.IsIndeterminate = true;
-        SyncLabel.Text = "Sync starting…";
-        Log("Sync started.");
+
+        // Fan out: each mailbox syncs on its own, so adding one starts it
+        // immediately rather than queueing behind whatever else is running.
+        foreach (var mailbox in _mailboxes.ToList())
+            _ = SyncMailboxAsync(mailbox);
+    }
+
+    /// <summary>
+    /// Syncs one mailbox. Independent of the others: its own guard, its own
+    /// progress, and its own failure. A mailbox already syncing is left alone
+    /// rather than started twice.
+    /// </summary>
+    async Task SyncMailboxAsync(MailboxHandle mailbox)
+    {
+        if (_scratchRoot is null) return;
+        lock (_syncing)
+        {
+            if (!_syncing.Add(mailbox.Upn)) return;
+        }
+        UpdateSyncChrome();
         try
         {
-            foreach (var mailbox in _mailboxes.ToList())
             {
-                _syncingMailbox = mailbox.Upn;
-                _syncingFolder = "";
+                _syncingFolders[mailbox.Upn] = "";
 
                 // Settings win over the legacy mailbox columns: the columns are
                 // only a fallback until every profile has been through V4.
@@ -2198,7 +2281,7 @@ public partial class MainWindow : Window
                 if (_settings is not null && !_settings.GetBool(SettingsCatalog.SyncEnabled, chain))
                 {
                     Log(LogLevel.Info, $"{mailbox.Upn}: skipped — sync is turned off for it.");
-                    continue;
+                    return;
                 }
 
                 var graph = await GetGraphAsync(mailbox);
@@ -2232,7 +2315,7 @@ public partial class MainWindow : Window
                             {
                                 lastScanFolder = p.FolderName ?? "";
                                 lastScanLog = 0;
-                                _syncingFolder = p.FolderName ?? "";
+                                _syncingFolders[mailbox.Upn] = p.FolderName ?? "";
                                 Log(LogLevel.Verbose, $"{p.FolderName}: listing…");
                             }
                             if (p.FolderDownloaded - lastScanLog >= 500)
@@ -2321,19 +2404,35 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             // Name where it stopped: "sync failed" with no location is the least
-            // actionable message there is, and mid-sync failures are usually
-            // specific to one mailbox or one folder.
-            var where = _syncingFolder.Length > 0
-                ? $"{_syncingMailbox} / {_syncingFolder}"
-                : _syncingMailbox.Length > 0 ? _syncingMailbox : "startup";
+            // actionable message there is, and one mailbox failing must not read
+            // as though everything did.
+            var folder = _syncingFolders.GetValueOrDefault(mailbox.Upn, "");
+            var where = folder.Length > 0 ? $"{mailbox.Upn} / {folder}" : mailbox.Upn;
             SyncLabel.Text = $"Sync failed at {where}: {ex.Message}";
             Log(LogLevel.Error, $"SYNC ERROR at {where}: {ex.Message}");
         }
         finally
         {
-            _syncRunning = false;
-            SyncButton.IsEnabled = true;
-            SyncBar.IsIndeterminate = false;
+            lock (_syncing) _syncing.Remove(mailbox.Upn);
+            _syncingFolders.Remove(mailbox.Upn);
+            UpdateSyncChrome();
+        }
+    }
+
+    /// <summary>
+    /// Reflects how many mailboxes are syncing. The button stays usable while
+    /// some are running so another can be started; only the ones in flight are
+    /// skipped.
+    /// </summary>
+    void UpdateSyncChrome()
+    {
+        int running;
+        lock (_syncing) running = _syncing.Count;
+
+        SyncButton.Content = running == 0 ? "Sync now" : $"Syncing ({running})";
+        SyncBar.IsIndeterminate = running > 0;
+        if (running == 0)
+        {
             SyncBar.Value = 0;
             SyncBar.Maximum = 100;
             ScanLabel.Text = "";

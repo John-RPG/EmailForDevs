@@ -439,8 +439,7 @@
                             Padding="8,1" Click="OnSyncClick"/>
                     <Button x:Name="SettingsButton" Content="Settings…" Margin="6,0,0,0"
                             Padding="8,1" Click="OnSettingsClick"/>
-                    <Button x:Name="AccountsButton" Content="Accounts…" Margin="6,0,0,0"
-                            Padding="8,1" Click="OnAccountsClick"/>
+
                 </StackPanel>
             </StatusBarItem>
         </StatusBar>

@@ -138,6 +138,35 @@
                 <TextBox x:Name="FilterBox" TextChanged="OnFilterChanged"/>
             </DockPanel>
 
+            <!-- Actions live above the settings list, not in a separate window:
+                 an account node has things to do (grant permissions, add a
+                 shared mailbox) as well as values to set, and splitting those
+                 across two dialogs is what made the old Accounts window a
+                 parallel place to look. -->
+            <Border x:Name="ActionsPanel" DockPanel.Dock="Top" Visibility="Collapsed"
+                    BorderBrush="#DDD" BorderThickness="1" Padding="8" Margin="0,0,0,8"
+                    Background="#FAFAFA">
+                <StackPanel>
+                    <TextBlock x:Name="ActionsHeader" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                    <ItemsControl x:Name="ActionsList">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Button Content="{Binding Label}" Tag="{Binding Id}"
+                                        Click="OnActionClick" Padding="10,3" Margin="0,0,8,4"
+                                        ToolTip="{Binding Hint}"
+                                        AutomationProperties.AutomationId="{Binding Id}"
+                                        AutomationProperties.Name="{Binding Label}"/>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock x:Name="ActionsDetail" Foreground="Gray" TextWrapping="Wrap"
+                               Margin="0,4,0,0"/>
+                </StackPanel>
+            </Border>
+
             <ScrollViewer VerticalScrollBarVisibility="Auto" BorderBrush="#DDD"
                           BorderThickness="1" Padding="6,0,6,6">
                 <ItemsControl x:Name="SettingsList">

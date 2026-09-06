@@ -154,6 +154,32 @@ public static class MailboxRegistry
     }
 
     /// <summary>
+    /// Registers a newly signed-in account together with its own mailbox. The
+    /// database is created lazily on first sync; only the key is minted here.
+    /// </summary>
+    public static long AddAccountWithMailbox(
+        SqliteConnection appDb, string upn, string mailboxDir)
+    {
+        Directory.CreateDirectory(Path.GetFullPath(mailboxDir));
+        var dbPath = Path.Combine(mailboxDir, Sanitise(upn) + ".db");
+
+        using var cmd = appDb.CreateCommand();
+        cmd.CommandText = """
+            INSERT OR IGNORE INTO identities(id, name) VALUES(1, 'Default');
+            INSERT INTO accounts(identity_id, kind, display_name, upn)
+            VALUES(1, 'graph', @u, @u);
+            INSERT INTO mailboxes(account_id, upn, display_name, kind, db_path, dek,
+                                  enabled, visible, sync_policy)
+            VALUES(last_insert_rowid(), @u, @u, 'primary', @p, @k, 1, 1, 'MirrorServer');
+            SELECT last_insert_rowid();
+            """;
+        cmd.Parameters.AddWithValue("@u", upn);
+        cmd.Parameters.AddWithValue("@p", dbPath);
+        cmd.Parameters.AddWithValue("@k", RandomNumberGenerator.GetBytes(32));
+        return Convert.ToInt64(cmd.ExecuteScalar());
+    }
+
+    /// <summary>
     /// Forgets a shared mailbox and deletes its database. Only ever applied to
     /// 'shared' rows: a primary mailbox is the account itself, and removing it
     /// here would leave an account with nothing to sync.

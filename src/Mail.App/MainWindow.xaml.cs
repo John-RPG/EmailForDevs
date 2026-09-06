@@ -1618,36 +1618,85 @@ public partial class MainWindow : Window
     /// </summary>
     void OnSettingsClick(object sender, RoutedEventArgs e)
     {
-        if (_appDb is null) return;
-        var window = new SettingsWindow(_appDb) { Owner = this };
-        window.ShowDialog();
-        if (window.ChangesApplied)
-            Log("Settings changed.");
-    }
-
-    void OnAccountsClick(object sender, RoutedEventArgs e)
-    {
-        if (_appDb is null || _scratchRoot is null)
-            return;
-        var window = new AccountsWindow(_appDb, _scratchRoot)
+        if (_appDb is null || _scratchRoot is null) return;
+        var repoRoot = Path.GetDirectoryName(_scratchRoot)!;
+        var window = new SettingsWindow(_appDb)
         {
             Owner = this,
-            // The picker authenticates as an existing account; the token cache
-            // and the handle needed for interactive sign-in both live here.
-            GraphForAccount = GetGraphForAccountAsync,
-            ApplyCapabilities = ApplyCapabilitiesAsync,
-            MappedMailboxes = GetMappedMailboxesAsync,
+            AddAccount = AddAccountInteractiveAsync,
+            Capabilities = accountUpn => ShowCapabilities(accountUpn),
+            AddSharedMailbox = accountUpn => ShowSharedMailboxPicker(repoRoot, accountUpn),
         };
         window.ShowDialog();
         if (!window.ChangesApplied)
             return;
-        Log("Account settings changed — reloading mailboxes.");
+
+        // Mailboxes or permissions may have changed, so reopen everything rather
+        // than guessing which parts are still valid.
+        Log("Settings changed — reloading mailboxes.");
         foreach (var mailbox in _mailboxes)
             mailbox.Db.Dispose();
         _mailboxes.Clear();
         _graphClients.Clear();
         ReloadMailboxes();
         StartSync();
+    }
+
+    /// <summary>Signs a new account in and registers its mailbox.</summary>
+    async Task<string> AddAccountInteractiveAsync()
+    {
+        if (_appDb is null || _scratchRoot is null) return "";
+        try
+        {
+            var auth = new GraphAuthenticator(
+                Path.Combine(_scratchRoot, "msal.cache"),
+                () => new WindowInteropHelper(this).Handle);
+            Log(LogLevel.Info,
+                "Sign-in needed to add an account: a browser window will open. " +
+                "Only the standard mail permissions are requested.");
+            var result = await auth.SignInInteractiveAsync();
+            var upn = result.Account.Username;
+
+            if (MailboxRegistry.List(_appDb).Any(m =>
+                    string.Equals(m.Upn, upn, StringComparison.OrdinalIgnoreCase)))
+            {
+                Log(LogLevel.Warning, $"{upn} is already registered.");
+                return "";
+            }
+
+            MailboxRegistry.AddAccountWithMailbox(
+                _appDb, upn, Path.Combine(_scratchRoot, "mailboxes"));
+            Log($"Added account {upn}.");
+            return upn;
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Error, $"Could not add the account: {ex.Message}");
+            return "";
+        }
+    }
+
+    void ShowCapabilities(string accountUpn)
+    {
+        if (_appDb is null) return;
+        var window = new CapabilitiesWindow(_appDb)
+        {
+            Owner = Application.Current.Windows.OfType<SettingsWindow>().FirstOrDefault() ?? (Window)this,
+            ApplyCapabilities = ApplyCapabilitiesAsync,
+        };
+        window.ShowDialog();
+    }
+
+    bool ShowSharedMailboxPicker(string repoRoot, string accountUpn)
+    {
+        if (_appDb is null) return false;
+        var picker = new SharedMailboxWindow(
+            _appDb, repoRoot, GetGraphForAccountAsync, GetMappedMailboxesAsync)
+        {
+            Owner = Application.Current.Windows.OfType<SettingsWindow>().FirstOrDefault() ?? (Window)this,
+        };
+        picker.ShowDialog();
+        return picker.MailboxesAdded;
     }
 
     /// <summary>

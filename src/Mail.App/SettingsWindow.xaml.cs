@@ -7,6 +7,7 @@ using System.Windows.Data;
 using System.Windows.Media;
 using Mail.Storage.Database;
 using Mail.Storage.Settings;
+using Mail.Sync.Auth;
 using Microsoft.Data.Sqlite;
 
 namespace Mail.App;
@@ -30,8 +31,18 @@ public partial class SettingsWindow : Window
         public string Hint { get; init; } = "";
         public ObservableCollection<ScopeNode> Children { get; } = [];
         public bool IsExpanded { get; init; } = true;
+
+        /// <summary>Account this node belongs to, for actions that act on one.</summary>
+        public string AccountUpn { get; init; } = "";
+
+        /// <summary>Registry row when the node is a mailbox.</summary>
+        public MailboxRegistry.MailboxEntry? Mailbox { get; init; }
+
         public override string ToString() => Label;
     }
+
+    /// <summary>A button offered for the selected node.</summary>
+    public sealed record NodeAction(string Id, string Label, string Hint);
 
     /// <summary>One editable setting at the selected level.</summary>
     public sealed class SettingRow : INotifyPropertyChanged
@@ -142,6 +153,19 @@ public partial class SettingsWindow : Window
 
     public bool ChangesApplied { get; private set; }
 
+    /// <summary>Signs a new account in; returns its address, or empty if cancelled.</summary>
+    public Func<Task<string>>? AddAccount { get; set; }
+
+    /// <summary>Opens the capability picker for an account.</summary>
+    public Action<string>? Capabilities { get; set; }
+
+    /// <summary>Opens the shared-mailbox picker; true when one was added.</summary>
+    public Func<string, bool>? AddSharedMailbox { get; set; }
+
+    int _accountCount;
+    int _mailboxCount;
+    string _totalStorage = "—";
+
     public SettingsWindow(SqliteConnection appDb)
     {
         InitializeComponent();
@@ -171,6 +195,19 @@ public partial class SettingsWindow : Window
         };
 
         var entries = MailboxRegistry.List(_appDb);
+        _mailboxCount = entries.Count;
+        _accountCount = entries.Select(e => e.AccountId).Distinct().Count();
+        long totalBytes = 0;
+        foreach (var entry in entries)
+        {
+            var path = Path.IsPathRooted(entry.DbPath)
+                ? entry.DbPath : Path.GetFullPath(entry.DbPath);
+            if (File.Exists(path)) totalBytes += new FileInfo(path).Length;
+        }
+        _totalStorage = totalBytes >= 1L << 30
+            ? $"{totalBytes / (double)(1L << 30):N2} GB"
+            : $"{totalBytes / (double)(1L << 20):N1} MB";
+
         foreach (var account in entries.GroupBy(e => e.AccountId))
         {
             var primary = account.FirstOrDefault(e => e.Kind == "primary") ?? account.First();
@@ -179,6 +216,7 @@ public partial class SettingsWindow : Window
                 Label = primary.AccountUpn,
                 Target = SettingTarget.Account(account.Key),
                 Hint = $"Applies to every mailbox reached with {primary.AccountUpn}.",
+                AccountUpn = primary.AccountUpn,
             };
 
             foreach (var mailbox in account)
@@ -191,6 +229,8 @@ public partial class SettingsWindow : Window
                     Target = SettingTarget.Mailbox(mailbox.Id),
                     Hint = $"Applies to {mailbox.Upn} and its folders.",
                     IsExpanded = false,
+                    AccountUpn = mailbox.AccountUpn,
+                    Mailbox = mailbox,
                 };
 
                 foreach (var (folderId, folderName) in FoldersFor(mailbox))
@@ -241,7 +281,204 @@ public partial class SettingsWindow : Window
         _selected = node;
         ScopeHeader.Text = node.Label;
         ScopeHint.Text = node.Hint;
+        LoadActions(node);
         LoadSettings();
+    }
+
+    /// <summary>
+    /// Actions available for a node. These were previously a separate Accounts
+    /// window; they belong beside the settings for the same thing, so there is
+    /// one place to look rather than two that each know half the story.
+    /// </summary>
+    void LoadActions(ScopeNode node)
+    {
+        var actions = new List<NodeAction>();
+        var detail = "";
+
+        switch (node.Target.Scope)
+        {
+            case SettingScope.Application:
+                actions.Add(new("add-account", "Add account…",
+                    "Sign in to another mailbox and start mirroring it."));
+                detail = $"{_accountCount:N0} account(s), {_mailboxCount:N0} mailbox(es), " +
+                         $"{_totalStorage} of local storage.";
+                break;
+
+            case SettingScope.Account:
+                actions.Add(new("capabilities", "Permissions…",
+                    "Choose what this app may do with this account, and see what each costs."));
+                actions.Add(new("add-shared", "Add shared mailbox…",
+                    "Mirror a mailbox someone has granted you access to."));
+                detail = DescribeCapabilities(node.AccountUpn);
+                break;
+
+            case SettingScope.Mailbox when node.Mailbox is { } mailbox:
+                actions.Add(new("reset-sync", "Reset sync state",
+                    "Clear delta checkpoints so the next sync re-lists. Stored mail is kept."));
+                if (mailbox.Kind != "primary")
+                    actions.Add(new("remove-shared", "Remove this mailbox",
+                        "Forget it and delete its local database. The server copy is untouched."));
+                actions.Add(new("show-db", "Show database file",
+                    "Open the folder holding this mailbox's encrypted database."));
+                detail = DescribeMailbox(mailbox);
+                break;
+        }
+
+        ActionsList.ItemsSource = actions;
+        ActionsHeader.Text = node.Target.Scope switch
+        {
+            SettingScope.Application => "Profile",
+            SettingScope.Account => "Account",
+            SettingScope.Mailbox => "Mailbox",
+            _ => "",
+        };
+        ActionsDetail.Text = detail;
+        ActionsPanel.Visibility = actions.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    string DescribeCapabilities(string accountUpn)
+    {
+        var granted = MailboxRegistry.GetCapabilities(_appDb, accountUpn);
+        var optional = AccountCapability.All.Where(c => !c.Required).ToList();
+        var names = optional.Where(c => granted.Contains(c.Id)).Select(c => c.Name).ToList();
+        return names.Count == 0
+            ? $"No optional permissions granted (of {optional.Count:N0}). " +
+              "Only reading and sending this account's own mail is allowed."
+            : $"Granted: {string.Join(", ", names)}.";
+    }
+
+    static string DescribeMailbox(MailboxRegistry.MailboxEntry mailbox)
+    {
+        var path = Path.IsPathRooted(mailbox.DbPath)
+            ? mailbox.DbPath
+            : Path.GetFullPath(mailbox.DbPath);
+        if (!File.Exists(path)) return $"{mailbox.Kind}; no local database yet.";
+        var bytes = new FileInfo(path).Length;
+        var size = bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):N2} GB"
+                 : bytes >= 1L << 20 ? $"{bytes / (double)(1L << 20):N1} MB"
+                 : $"{bytes / 1024.0:N0} KB";
+        return $"{mailbox.Kind}; {size} on disk at {mailbox.DbPath}";
+    }
+
+    /// <summary>Handles a button from the actions panel.</summary>
+    async void OnActionClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.Tag is not string id ||
+            _selected is null) return;
+
+        switch (id)
+        {
+            case "add-account" when AddAccount is not null:
+                var added = await AddAccount();
+                if (added.Length > 0)
+                {
+                    StatusLabel.Text = $"Added {added}.";
+                    ChangesApplied = true;
+                    BuildScopeTree();
+                }
+                break;
+
+            case "capabilities" when Capabilities is not null:
+                Capabilities(_selected.AccountUpn);
+                LoadActions(_selected);
+                ChangesApplied = true;
+                break;
+
+            case "add-shared" when AddSharedMailbox is not null:
+                if (AddSharedMailbox(_selected.AccountUpn))
+                {
+                    ChangesApplied = true;
+                    BuildScopeTree();
+                    StatusLabel.Text = "Shared mailbox added; it will populate on the next sync.";
+                }
+                break;
+
+            case "reset-sync" when _selected.Mailbox is { } resetTarget:
+                ResetSyncState(resetTarget);
+                break;
+
+            case "remove-shared" when _selected.Mailbox is { } removeTarget:
+                RemoveSharedMailbox(removeTarget);
+                break;
+
+            case "show-db" when _selected.Mailbox is { } showTarget:
+                ShowDatabaseFile(showTarget);
+                break;
+        }
+    }
+
+    void ResetSyncState(MailboxRegistry.MailboxEntry mailbox)
+    {
+        var path = Path.IsPathRooted(mailbox.DbPath)
+            ? mailbox.DbPath : Path.GetFullPath(mailbox.DbPath);
+        if (!File.Exists(path))
+        {
+            StatusLabel.Text = "No local database yet — nothing to reset.";
+            return;
+        }
+        try
+        {
+            using var db = MailboxDatabase.Open(path, mailbox.Dek);
+            using var cmd = db.CreateCommand();
+            // Only the checkpoints go: stored messages are matched by id on the
+            // next pass, so nothing is re-downloaded.
+            cmd.CommandText = "UPDATE folders SET delta_token = NULL;";
+            var affected = cmd.ExecuteNonQuery();
+            ChangesApplied = true;
+            StatusLabel.Text =
+                $"Cleared {affected:N0} folder checkpoint(s) for {mailbox.Upn}. " +
+                "The next sync re-lists; stored mail is not downloaded again.";
+        }
+        catch (Exception ex)
+        {
+            StatusLabel.Text = $"Could not reset sync state: {ex.Message}";
+        }
+    }
+
+    void RemoveSharedMailbox(MailboxRegistry.MailboxEntry mailbox)
+    {
+        var confirm = MessageBox.Show(
+            this,
+            $"Remove {mailbox.Upn} and delete its local database?\n\n" +
+            "The mailbox on the server is not touched; only this machine's copy " +
+            "is deleted. Mail that exists only locally would be lost.",
+            "eeeMail — remove shared mailbox",
+            MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.OK) return;
+
+        var repoRoot = Path.GetDirectoryName(Path.GetFullPath(mailbox.DbPath)) ?? "";
+        if (MailboxRegistry.RemoveShared(_appDb, mailbox.Id, repoRoot))
+        {
+            // Its settings would otherwise linger and be inherited by a future
+            // mailbox that happened to reuse the id.
+            _store.ClearAll(SettingTarget.Mailbox(mailbox.Id));
+            ChangesApplied = true;
+            StatusLabel.Text = $"Removed {mailbox.Upn}.";
+            BuildScopeTree();
+        }
+        else
+        {
+            StatusLabel.Text = $"Could not remove {mailbox.Upn}.";
+        }
+    }
+
+    void ShowDatabaseFile(MailboxRegistry.MailboxEntry mailbox)
+    {
+        var path = Path.IsPathRooted(mailbox.DbPath)
+            ? mailbox.DbPath : Path.GetFullPath(mailbox.DbPath);
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = File.Exists(path) ? $"/select,\"{path}\"" : $"\"{Path.GetDirectoryName(path)}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            StatusLabel.Text = $"Could not open the folder: {ex.Message}";
+        }
     }
 
     void OnScopeChanged(object sender, RoutedPropertyChangedEventArgs<object> e)

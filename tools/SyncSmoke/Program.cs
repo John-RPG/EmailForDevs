@@ -182,6 +182,37 @@ if (args.Contains("autodiscover", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Contains("scopecheck", StringComparer.OrdinalIgnoreCase))
+{
+    // Compares the scopes the app now asks for against what the cached token
+    // actually holds. A mismatch means MSAL cannot answer silently, which is
+    // what forces a browser prompt on every launch.
+    var scAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    foreach (var acct in await scAuth.GetAccountsAsync())
+    {
+        Console.WriteLine($"=== {acct.Username} ===");
+        var caps = MailboxRegistry.GetCapabilities(appDb, acct.Username);
+        var wanted = AccountCapability.GraphScopesFor(caps);
+        Console.WriteLine($"  capabilities recorded : [{string.Join(",", caps.OrderBy(c => c))}]");
+        Console.WriteLine($"  app will request      : {string.Join(" ", wanted.Select(w => w[(w.LastIndexOf('/') + 1)..]))}");
+
+        var silent = await scAuth.AcquireSilentAsync(acct, wanted);
+        if (silent is null)
+        {
+            Console.WriteLine("  SILENT FAILS -> would open a browser");
+            var basic = await scAuth.AcquireSilentAsync(acct, GraphAuthenticator.MailScopes);
+            Console.WriteLine(basic is null
+                ? "  (even the base mail scopes fail silently)"
+                : $"  but base mail scopes succeed, holding: {string.Join(" ", basic.Scopes.Select(x => x[(x.LastIndexOf('/') + 1)..]))}");
+        }
+        else
+        {
+            Console.WriteLine($"  silent OK, token holds: {string.Join(" ", silent.Scopes.Select(x => x[(x.LastIndexOf('/') + 1)..]))}");
+        }
+    }
+    return;
+}
+
 if (args.Contains("settings", StringComparer.OrdinalIgnoreCase))
 {
     // Walks the real store against the live profile, so inheritance is checked

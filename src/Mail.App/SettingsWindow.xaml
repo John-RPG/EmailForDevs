@@ -45,22 +45,42 @@
                                    Foreground="#888" Margin="0,3,0,0"/>
                     </StackPanel>
 
+                    <!-- Each editor is named after its setting. Generated rows
+                         otherwise present as a wall of unnamed combo boxes to
+                         both screen readers and UI automation, with no way to
+                         tell which setting any of them belongs to. -->
                     <Grid Grid.Column="1" VerticalAlignment="Top" Margin="0,0,0,0">
                         <CheckBox IsChecked="{Binding BoolValue}" Click="OnValueChanged"
                                   Tag="{Binding Key}" VerticalAlignment="Center"
                                   Visibility="{Binding BoolVisibility}"
-                                  Content="{Binding BoolCaption}"/>
+                                  Content="{Binding BoolCaption}"
+                                  AutomationProperties.AutomationId="{Binding Key}"
+                                  AutomationProperties.Name="{Binding Name}"
+                                  AutomationProperties.HelpText="{Binding Description}"/>
                         <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding TextValue}"
                                   SelectionChanged="OnValueChanged" Tag="{Binding Key}"
-                                  Visibility="{Binding ChoiceVisibility}"/>
-                        <TextBox Text="{Binding TextValue, UpdateSourceTrigger=PropertyChanged}"
+                                  Visibility="{Binding ChoiceVisibility}"
+                                  AutomationProperties.AutomationId="{Binding Key}"
+                                  AutomationProperties.Name="{Binding Name}"
+                                  AutomationProperties.HelpText="{Binding Description}"/>
+                        <!-- Commit on focus loss, not per keystroke: a
+                             PropertyChanged trigger writes back mid-edit, which
+                             interleaves with the incoming text and can corrupt
+                             the value (typing fast, or an automated SetValue,
+                             turned "6" into "ser6"). -->
+                        <TextBox Text="{Binding TextValue, UpdateSourceTrigger=LostFocus}"
                                  LostFocus="OnValueChanged" Tag="{Binding Key}"
-                                 Visibility="{Binding TextVisibility}"/>
+                                 Visibility="{Binding TextVisibility}"
+                                 AutomationProperties.AutomationId="{Binding Key}"
+                                 AutomationProperties.Name="{Binding Name}"
+                                 AutomationProperties.HelpText="{Binding Description}"/>
                     </Grid>
 
                     <Button Grid.Column="2" Content="Clear" Padding="8,2" Margin="8,0,0,0"
                             VerticalAlignment="Top" Click="OnClearOverride" Tag="{Binding Key}"
                             Visibility="{Binding OverriddenVisibility}"
+                            AutomationProperties.AutomationId="{Binding ClearAutomationId}"
+                            AutomationProperties.Name="{Binding ClearCaption}"
                             ToolTip="Remove the override set at this level so it inherits again."/>
                 </Grid>
             </Border>

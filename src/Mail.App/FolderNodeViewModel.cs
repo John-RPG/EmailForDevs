@@ -56,16 +56,27 @@ public sealed class FolderNodeViewModel : INotifyPropertyChanged
     public string Counts
     {
         get => _counts;
-        set { _counts = value; Raise(nameof(Counts)); }
+        set { _counts = value; Raise(nameof(Counts)); Raise(nameof(CountsVisibility)); }
     }
+
+    /// <summary>
+    /// Collapsed when there is no number to show, so the cell takes no width at
+    /// all and the folder name gets it back. Reserving space for absent numbers
+    /// truncated names throughout the tree.
+    /// </summary>
+    public Visibility CountsVisibility =>
+        _counts.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
     string _totals = "";
     /// <summary>Message count, or local/server totals while still downloading.</summary>
     public string Totals
     {
         get => _totals;
-        set { _totals = value; Raise(nameof(Totals)); }
+        set { _totals = value; Raise(nameof(Totals)); Raise(nameof(TotalsVisibility)); }
     }
+
+    public Visibility TotalsVisibility =>
+        _totals.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
     bool _hasUnread;
     public bool HasUnread

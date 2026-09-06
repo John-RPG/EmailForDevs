@@ -74,6 +74,14 @@ public partial class MainWindow : Window
         /// <summary>Sort key for the Received column: the real instant, not the
         /// formatted string, so sorting survives a format change.</summary>
         public DateTimeOffset? ReceivedValue { get; init; }
+
+        /// <summary>
+        /// What a screen reader announces for the row, and what UI automation
+        /// sees as its name. Without this the record's generated ToString()
+        /// leaks the entire object graph, including the mailbox handle.
+        /// </summary>
+        public override string ToString() =>
+            $"{(IsUnread ? "Unread. " : "")}From {FromName}, {Received}: {Subject}";
     }
 
     public sealed record AttachmentItem(
@@ -123,6 +131,10 @@ public partial class MainWindow : Window
 
     /// <summary>Shared for Autodiscover; one per process, not one per call.</summary>
     readonly HttpClient _http = new();
+
+    /// <summary>Where sync currently is, so a failure can say where it stopped.</summary>
+    string _syncingMailbox = "";
+    string _syncingFolder = "";
     long _currentMessageId;
 
     public MainWindow()
@@ -945,6 +957,46 @@ public partial class MainWindow : Window
             LoadFolder(new FolderNode(selectedMailbox, selected.FolderId, selected.Name));
     }
 
+    /// <summary>
+    /// Why a sign-in prompt is about to appear. A browser window opening with no
+    /// explanation is the hardest kind of problem to diagnose — it was exactly
+    /// what made a stale capability record hard to trace — so every interactive
+    /// sign-in states the account, what triggered it, and why the cache could
+    /// not answer.
+    /// </summary>
+    async Task<AuthenticationResult> SignInExplainedAsync(
+        GraphAuthenticator auth, string accountUpn, string[]? scopes, string reason)
+    {
+        var wanted = scopes is null
+            ? "the standard mail permissions"
+            : string.Join(", ", scopes.Select(x => x[(x.LastIndexOf('/') + 1)..]));
+        Log(LogLevel.Info,
+            $"Sign-in needed for {accountUpn}: {reason}. " +
+            $"Requesting {wanted}. A browser window will open.");
+        try
+        {
+            var result = scopes is null
+                ? await auth.SignInInteractiveAsync(accountUpn)
+                : await auth.SignInInteractiveAsync(accountUpn, scopes: scopes);
+            Log(LogLevel.Info, $"Sign-in completed for {accountUpn}.");
+            return result;
+        }
+        catch (MsalClientException ex) when (ex.ErrorCode == "authentication_canceled")
+        {
+            // MSAL says "canceled" whenever the browser closes without a token,
+            // including when it closed because the tenant demanded approval.
+            Log(LogLevel.Warning,
+                $"Sign-in for {accountUpn} did not complete. If approval was " +
+                "requested, approve it and try again — no second sign-in is needed.");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Error, $"Sign-in failed for {accountUpn}: {ex.Message}");
+            throw;
+        }
+    }
+
     /// <summary>Raw access token for calls the typed SDK cannot express (raw-MIME send).</summary>
     async Task<string> GetAccessTokenAsync(MailboxHandle mailbox)
     {
@@ -956,7 +1008,10 @@ public partial class MainWindow : Window
         var account = accounts.FirstOrDefault(a =>
             string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
         var result = account is null ? null : await auth.AcquireSilentAsync(account);
-        result ??= await auth.SignInInteractiveAsync(accountUpn);
+        result ??= await SignInExplainedAsync(auth, accountUpn, null,
+            account is null
+                ? "this account has no cached credentials on this machine"
+                : "the saved credentials have expired and could not be renewed silently");
         return result.AccessToken;
     }
 
@@ -986,12 +1041,44 @@ public partial class MainWindow : Window
         var account = accounts.FirstOrDefault(a =>
             string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
         var token = account is null ? null : await auth.AcquireSilentAsync(account, scopes);
+
+        // Optional capabilities must never cost a sign-in prompt. If the wider
+        // set cannot be satisfied from cache, the recorded capabilities are
+        // stale — the scopes were asked for once but not granted — so fall back
+        // to the scopes the app cannot work without, and correct the record.
+        // Without this the app opens a browser on every single launch.
+        if (token is null && account is not null && scopes.Length > GraphAuthenticator.MailScopes.Length)
+        {
+            token = await auth.AcquireSilentAsync(account, GraphAuthenticator.MailScopes);
+            if (token is not null)
+            {
+                var held = token.Scopes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var capability in AccountCapability.All.Where(c => !c.Required))
+                {
+                    var missing = capability.Scopes.Any(want =>
+                        want.StartsWith("https://graph.microsoft.com/", StringComparison.OrdinalIgnoreCase) &&
+                        !held.Any(h => h.EndsWith(want[(want.LastIndexOf('/') + 1)..],
+                            StringComparison.OrdinalIgnoreCase)));
+                    if (missing && MailboxRegistry.HasCapability(_appDb!, accountUpn, capability.Id))
+                    {
+                        MailboxRegistry.SetCapability(_appDb!, accountUpn, capability.Id, false);
+                        Log(LogLevel.Warning,
+                            $"{accountUpn}: \"{capability.Name}\" was recorded but its permission " +
+                            "was never granted — turning it off. Re-enable it in Settings to request it again.");
+                    }
+                }
+            }
+        }
+
         if (token is not null)
             Log(LogLevel.Debug, $"Silent token acquired for {accountUpn}.");
         else
         {
-            Log($"Interactive sign-in required for {accountUpn}…");
-            token = await auth.SignInInteractiveAsync(accountUpn, scopes: scopes);
+            token = await SignInExplainedAsync(auth, accountUpn, scopes,
+                account is null
+                    ? "no cached credentials for this account on this machine"
+                    : "the saved credentials could not be renewed silently (expired, " +
+                      "revoked, or the password changed)");
         }
         var client = new GraphServiceClient(
             new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, token)));
@@ -1493,7 +1580,7 @@ public partial class MainWindow : Window
     /// Silent first: after an administrator approves a request the grant already
     /// exists, so returning here completes with no browser at all.
     /// </summary>
-    static async Task<AuthenticationResult?> SignInForScopesAsync(
+    async Task<AuthenticationResult?> SignInForScopesAsync(
         GraphAuthenticator auth, string accountUpn, string[] scopes)
     {
         try
@@ -1502,7 +1589,16 @@ public partial class MainWindow : Window
             var existing = accounts.FirstOrDefault(a =>
                 string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
             var silent = existing is null ? null : await auth.AcquireSilentAsync(existing, scopes);
-            return silent ?? await auth.SignInInteractiveAsync(accountUpn, scopes: scopes);
+            if (silent is not null)
+            {
+                Log(LogLevel.Info,
+                    $"{accountUpn}: the requested permissions were already granted — " +
+                    "no sign-in needed.");
+                return silent;
+            }
+            return await SignInExplainedAsync(auth, accountUpn, scopes,
+                "you changed which capabilities this account may use, and the new " +
+                "permissions have not been granted yet");
         }
         catch (MsalException)
         {
@@ -1535,10 +1631,22 @@ public partial class MainWindow : Window
             // Only ask when the user granted it: without the capability this
             // would pop a consent prompt they already declined.
             if (!MailboxRegistry.HasCapability(_appDb!, accountUpn, AccountCapability.MappedLookup.Id))
+            {
+                Log(LogLevel.Verbose,
+                    $"{accountUpn}: skipping mailbox lookup — \"{AccountCapability.MappedLookup.Name}\" is off.");
                 return [];
+            }
 
+            // Deliberately silent-only: discovery is a convenience and must
+            // never be the reason a browser appears.
             var token = await auth.AcquireSilentAsync(account, GraphAuthenticator.ExchangeScopes);
-            if (token is null) return [];
+            if (token is null)
+            {
+                Log(LogLevel.Warning,
+                    $"{accountUpn}: mailbox lookup needs Exchange permissions that are not " +
+                    "granted. Enable it in Settings to request them.");
+                return [];
+            }
 
             var mapped = await new AutodiscoverMailboxes(_http)
                 .GetAlternateMailboxesAsync(accountUpn, token.AccessToken);
@@ -1601,6 +1709,8 @@ public partial class MainWindow : Window
         {
             foreach (var mailbox in _mailboxes.ToList())
             {
+                _syncingMailbox = mailbox.Upn;
+                _syncingFolder = "";
                 var graph = await GetGraphAsync(mailbox);
                 var since = mailbox.Since;
                 var stopwatch = Stopwatch.StartNew();
@@ -1630,6 +1740,7 @@ public partial class MainWindow : Window
                             {
                                 lastScanFolder = p.FolderName ?? "";
                                 lastScanLog = 0;
+                                _syncingFolder = p.FolderName ?? "";
                                 Log(LogLevel.Verbose, $"{p.FolderName}: listing…");
                             }
                             if (p.FolderDownloaded - lastScanLog >= 500)
@@ -1715,8 +1826,14 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            SyncLabel.Text = $"Sync failed: {ex.Message}";
-            Log(LogLevel.Error, $"SYNC ERROR: {ex.Message}");
+            // Name where it stopped: "sync failed" with no location is the least
+            // actionable message there is, and mid-sync failures are usually
+            // specific to one mailbox or one folder.
+            var where = _syncingFolder.Length > 0
+                ? $"{_syncingMailbox} / {_syncingFolder}"
+                : _syncingMailbox.Length > 0 ? _syncingMailbox : "startup";
+            SyncLabel.Text = $"Sync failed at {where}: {ex.Message}";
+            Log(LogLevel.Error, $"SYNC ERROR at {where}: {ex.Message}");
         }
         finally
         {

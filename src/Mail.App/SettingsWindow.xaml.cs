@@ -51,6 +51,10 @@ public partial class SettingsWindow : Window
         public IReadOnlyList<string>? Choices => Definition.Choices;
         public string KeyText => Definition.Key;
 
+        /// <summary>Distinct per row, so automation can address one Clear button.</summary>
+        public string ClearAutomationId => $"clear:{Definition.Key}";
+        public string ClearCaption => $"Clear override for {Definition.Name}";
+
         /// <summary>Caption beside a checkbox, since a bare box reads as unlabelled.</summary>
         public string BoolCaption => BoolValue ? "on" : "off";
 

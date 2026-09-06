@@ -17,7 +17,21 @@ public static class AppDatabase
         return conn;
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4, V5];
+
+    const string V5 = """
+        -- V3 carried the old discovery_enabled flag over as granted capabilities,
+        -- but that flag recorded what had been *asked for*, not what the tenant
+        -- actually granted. Where the scopes were never granted, the app then
+        -- requested them on every launch, MSAL could not answer from cache, and
+        -- the user got a browser prompt each time they opened the app.
+        --
+        -- Drop those two, so they are re-derived from a real sign-in. Nothing is
+        -- lost: an account that genuinely holds the scopes records them again the
+        -- next time capabilities are applied, and until then the features simply
+        -- report themselves as off.
+        DELETE FROM account_capabilities WHERE capability IN ('people', 'directory');
+        """;
 
     const string V4 = """
         -- One table for every setting at every level. Only overrides are stored:

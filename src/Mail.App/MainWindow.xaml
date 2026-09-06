@@ -105,12 +105,14 @@
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
-                                    <!-- Shared groups: every row reserves the same
-                                         width for each number, so unread and totals
-                                         line up as columns instead of trailing the
-                                         name at whatever width it happens to be. -->
-                                    <ColumnDefinition Width="Auto" SharedSizeGroup="FolderTotal"/>
-                                    <ColumnDefinition Width="Auto" SharedSizeGroup="FolderUnread"/>
+                                    <!-- Auto, not a shared size group. A shared group
+                                         makes every row reserve the widest row's number
+                                         column, so a folder with no counts still lost
+                                         ~100px and truncated its name for nothing. The
+                                         cells collapse when empty (see NumberVisibility),
+                                         which hands the space back to the name. -->
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBlock Grid.Column="0" Text="{Binding Icon}" Margin="0,0,5,0"
                                            VerticalAlignment="Center"/>
@@ -121,12 +123,14 @@
                                 <TextBlock Grid.Column="2" Text="{Binding Totals}"
                                            Foreground="Gray"
                                            VerticalAlignment="Center"
-                                           TextAlignment="Right" MinWidth="64" Margin="8,0,0,0"/>
+                                           TextAlignment="Right" Margin="8,0,0,0"
+                                           Visibility="{Binding TotalsVisibility}"/>
                                 <TextBlock Grid.Column="3" Text="{Binding Counts}"
                                            Foreground="{Binding CountBrush}"
                                            FontWeight="{Binding Weight}"
                                            VerticalAlignment="Center"
-                                           TextAlignment="Right" MinWidth="34" Margin="6,0,4,0"/>
+                                           TextAlignment="Right" MinWidth="30" Margin="6,0,4,0"
+                                           Visibility="{Binding CountsVisibility}"/>
                                 <Grid.ContextMenu>
                                     <ContextMenu>
                                         <MenuItem Header="Add to favourites" Click="OnAddFavourite"/>

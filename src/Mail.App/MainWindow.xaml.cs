@@ -154,6 +154,16 @@ public partial class MainWindow : Window
         CommandBindings.Add(new CommandBinding(ReplyCommand, (_, _) => ReplyToSelected(ReplyKind.Reply)));
         CommandBindings.Add(new CommandBinding(ReplyAllCommand, (_, _) => ReplyToSelected(ReplyKind.ReplyAll)));
         CommandBindings.Add(new CommandBinding(ForwardCommand, (_, _) => ReplyToSelected(ReplyKind.Forward)));
+        CommandBindings.Add(new CommandBinding(DeleteCommand, (s2, e2) => OnDeleteMessages(s2, e2)));
+        CommandBindings.Add(new CommandBinding(MarkReadCommand, (_, _) => SetRead(true)));
+        CommandBindings.Add(new CommandBinding(MarkUnreadCommand, (_, _) => SetRead(false)));
+        CommandBindings.Add(new CommandBinding(SyncCommand, (s2, e2) => OnSyncClick(s2, e2)));
+        CommandBindings.Add(new CommandBinding(SettingsCommand, (s2, e2) => OnSettingsClick(s2, e2)));
+        CommandBindings.Add(new CommandBinding(FocusSearchCommand, (_, _) =>
+        {
+            SearchBox.Focus();
+            SearchBox.SelectAll();
+        }));
         Loaded += (_, _) =>
         {
             OpenProfile();
@@ -1469,6 +1479,16 @@ public partial class MainWindow : Window
     public static readonly RoutedCommand ReplyCommand = new();
     public static readonly RoutedCommand ReplyAllCommand = new();
     public static readonly RoutedCommand ForwardCommand = new();
+
+    // The Delete tooltip promised a Del shortcut that did not exist. These are
+    // the keys a mail client is expected to honour, so they are bound rather
+    // than left to the context menu.
+    public static readonly RoutedCommand DeleteCommand = new();
+    public static readonly RoutedCommand MarkReadCommand = new();
+    public static readonly RoutedCommand MarkUnreadCommand = new();
+    public static readonly RoutedCommand SyncCommand = new();
+    public static readonly RoutedCommand SettingsCommand = new();
+    public static readonly RoutedCommand FocusSearchCommand = new();
 
     void OnComposeNew(object sender, RoutedEventArgs e) => OpenCompose(null);
     void OnReply(object sender, RoutedEventArgs e) => ReplyToSelected(ReplyKind.Reply);

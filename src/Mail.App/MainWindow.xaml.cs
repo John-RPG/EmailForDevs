@@ -121,7 +121,14 @@ public partial class MainWindow : Window
             LogLevel.Error => Brushes.Firebrick,
             _ => Brushes.Black,
         };
-    }
+    
+        /// <summary>
+        /// What a screen reader announces for a log row. The generated
+        /// ToString() would read out the whole record shape instead.
+        /// </summary>
+        public override string ToString() =>
+            $"{At:HH:mm:ss} {Level}: {Message}";
+}
 
     readonly List<MailboxHandle> _mailboxes = [];
     readonly Dictionary<(string Upn, long FolderId), FolderNodeViewModel> _folderNodes = [];
@@ -2322,7 +2329,7 @@ public partial class MainWindow : Window
     void ShowCapabilities(string accountUpn)
     {
         if (_appDb is null) return;
-        var window = new CapabilitiesWindow(_appDb)
+        var window = new CapabilitiesWindow(_appDb, accountUpn)
         {
             Owner = Application.Current.Windows.OfType<SettingsWindow>().FirstOrDefault() ?? (Window)this,
             ApplyCapabilities = ApplyCapabilitiesAsync,

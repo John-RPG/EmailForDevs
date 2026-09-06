@@ -42,7 +42,10 @@ public partial class SettingsWindow : Window
     }
 
     /// <summary>A button offered for the selected node.</summary>
-    public sealed record NodeAction(string Id, string Label, string Hint);
+    public sealed record NodeAction(string Id, string Label, string Hint)
+    {
+        public override string ToString() => Label;
+    }
 
     /// <summary>One editable setting at the selected level.</summary>
     public sealed class SettingRow : INotifyPropertyChanged
@@ -117,6 +120,14 @@ public partial class SettingsWindow : Window
             SettingRisk.Destructive => "destructive",
             _ => "",
         };
+
+        /// <summary>
+        /// Accessible name: the setting, its value, and where that came from.
+        /// A generated list of rows is otherwise indistinguishable.
+        /// </summary>
+        public override string ToString() =>
+            $"{Name}, {TextValue}" +
+            (Definition.Risk == SettingRisk.Safe ? "" : $", {RiskLabel}");
 
         public Brush RiskBrush => Definition.Risk switch
         {

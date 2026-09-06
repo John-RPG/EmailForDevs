@@ -69,6 +69,14 @@ public partial class CapabilitiesWindow : Window
             _ => "",
         };
 
+        /// <summary>
+        /// Accessible name: the capability, whether it is on, and what it costs.
+        /// A class reports only its type name otherwise.
+        /// </summary>
+        public override string ToString() =>
+            $"{Name}, {(Enabled ? "enabled" : "disabled")}" +
+            (Capability.Risk == CapabilityRisk.Normal ? "" : $", {RiskLabel}");
+
         public Brush RiskBrush => Capability.Risk switch
         {
             CapabilityRisk.Essential => new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
@@ -79,6 +87,7 @@ public partial class CapabilitiesWindow : Window
     }
 
     readonly SqliteConnection _appDb;
+    readonly string? _initialAccount;
     readonly ObservableCollection<CapabilityRow> _rows = [];
     List<MailboxRegistry.MailboxEntry> _accounts = [];
 
@@ -87,10 +96,16 @@ public partial class CapabilitiesWindow : Window
 
     public bool ChangesApplied { get; private set; }
 
-    public CapabilitiesWindow(SqliteConnection appDb)
+    /// <param name="initialAccount">
+    /// Account to open on. Defaulting to the first silently changes the subject:
+    /// the caller picked an account, and answering about a different one is
+    /// worse than showing nothing.
+    /// </param>
+    public CapabilitiesWindow(SqliteConnection appDb, string? initialAccount = null)
     {
         InitializeComponent();
         _appDb = appDb;
+        _initialAccount = initialAccount;
         CapabilityList.ItemsSource = _rows;
         Loaded += (_, _) => LoadAccounts();
     }
@@ -98,8 +113,15 @@ public partial class CapabilitiesWindow : Window
     void LoadAccounts()
     {
         _accounts = [.. MailboxRegistry.List(_appDb).Where(m => m.Kind == "primary")];
-        AccountCombo.ItemsSource = _accounts.Select(a => a.Upn).ToList();
-        if (_accounts.Count > 0) AccountCombo.SelectedIndex = 0;
+        var names = _accounts.Select(a => a.Upn).ToList();
+        AccountCombo.ItemsSource = names;
+        if (names.Count == 0) return;
+
+        var index = _initialAccount is null
+            ? 0
+            : names.FindIndex(n => string.Equals(n, _initialAccount, StringComparison.OrdinalIgnoreCase));
+        AccountCombo.SelectedIndex = index >= 0 ? index : 0;
+        LoadRows();
     }
 
     string? SelectedAccount => AccountCombo.SelectedItem as string;

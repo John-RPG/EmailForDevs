@@ -20,6 +20,12 @@ public partial class ComposeWindow : Window
     public sealed record AttachmentEntry(string FileName, string ContentType, byte[] Content)
     {
         public string Display => $"{FileName} ({Content.Length / 1024.0:N0} KB)";
+
+        /// <summary>
+        /// Accessible name. Without it the generated ToString() reports the byte
+        /// array as its type, so every attachment sounds identical.
+        /// </summary>
+        public override string ToString() => $"{Display}, {ContentType}";
     }
 
     readonly ObservableCollection<AttachmentEntry> _attachments = [];

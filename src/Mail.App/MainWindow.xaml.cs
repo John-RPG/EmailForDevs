@@ -90,7 +90,15 @@ public partial class MainWindow : Window
 
     public sealed record AttachmentItem(
         object Mailbox, long Id, string Name, string ContentType, string SizeKb,
-        string Inline, bool HasContent);
+        string Inline, bool HasContent)
+    {
+        public long SizeBytes { get; init; }
+        public bool IsInline { get; init; }
+
+        /// <summary>What a screen reader announces, rather than the class name.</summary>
+        public override string ToString() =>
+            $"{Name}, {ContentType}, {SizeKb} KB{(IsInline ? ", inline" : "")}";
+    }
 
     public enum LogLevel { Debug, Verbose, Info, Warning, Error }
 
@@ -1503,28 +1511,187 @@ public partial class MainWindow : Window
             : Encoding.Latin1.GetString(raw, 0, RawDisplayCap) +
               $"{Environment.NewLine}… (truncated for display: {raw.Length:N0} bytes total)";
 
-        AttachmentList.ItemsSource = MailboxStore.GetAttachments(mailbox.Db, messageId)
+        _allAttachments = [.. MailboxStore.GetAttachments(mailbox.Db, messageId)
             .Select(a => new AttachmentItem(
                 mailbox, a.Id, a.FileName ?? "(unnamed)", a.ContentType ?? "",
-                (a.Size / 1024.0).ToString("N0"), a.IsInline ? "yes" : "", a.HasContent))
-            .ToList();
+                (a.Size / 1024.0).ToString("N0"), a.IsInline ? "yes" : "", a.HasContent)
+            {
+                SizeBytes = a.Size,
+                IsInline = a.IsInline,
+            })];
+        ShowInlineBox.IsChecked = _settings?.GetBool(
+            SettingsCatalog.ShowInlineAttachments, ChainFor(mailbox)) ?? false;
+        OpenAttachmentButton.Visibility = _settings?.GetBool(
+            SettingsCatalog.OpenAttachmentsExternally, SettingTarget.Application) == true
+                ? Visibility.Visible : Visibility.Collapsed;
+        ApplyAttachmentFilter();
 
         _ = RenderPreviewAsync(); // preview pane is always visible now
     }
 
-    void OnAttachmentSave(object sender, MouseButtonEventArgs e)
+    /// <summary>Double-clicking a row saves it, same as the Save button.</summary>
+    void OnAttachmentSave(object sender, MouseButtonEventArgs e) => SaveSelectedAttachment();
+
+    List<AttachmentItem> _allAttachments = [];
+
+    /// <summary>
+    /// Applies the inline filter. Inline parts are embedded images — logos and
+    /// signature graphics — so listing them by default buries the file someone
+    /// actually attached among a dozen decorations.
+    /// </summary>
+    void ApplyAttachmentFilter()
     {
+        var showInline = ShowInlineBox.IsChecked == true;
+        var shown = showInline
+            ? _allAttachments
+            : [.. _allAttachments.Where(a => !a.IsInline)];
+        AttachmentList.ItemsSource = shown;
+
+        var hidden = _allAttachments.Count - shown.Count;
+        var bytes = shown.Sum(a => a.SizeBytes);
+        AttachmentSummary.Text = _allAttachments.Count == 0
+            ? "No attachments."
+            : $"{shown.Count:N0} shown ({FormatBytes(bytes)})" +
+              (hidden > 0 ? $", {hidden:N0} inline hidden" : "");
+        ClearAttachmentPreview();
+    }
+
+    void OnToggleInline(object sender, RoutedEventArgs e)
+    {
+        ApplyAttachmentFilter();
+        // Remember the choice at the level being viewed, so it is not re-made
+        // for every message.
+        if (_settings is not null && _currentMailbox is { } mailbox)
+        {
+            _settings.Set(SettingsCatalog.ShowInlineAttachments.Key,
+                SettingTarget.Mailbox(mailbox.Id),
+                ShowInlineBox.IsChecked == true ? "true" : "false");
+        }
+    }
+
+    static string FormatBytes(long bytes) =>
+        bytes >= 1L << 20 ? $"{bytes / (double)(1L << 20):N1} MB"
+      : bytes >= 1024 ? $"{bytes / 1024.0:N0} KB"
+      : $"{bytes:N0} bytes";
+
+    void ClearAttachmentPreview()
+    {
+        AttachmentImage.Source = null;
+        AttachmentImage.Visibility = Visibility.Collapsed;
+        AttachmentText.Text = "";
+        AttachmentText.Visibility = Visibility.Collapsed;
+        AttachmentPreviewHint.Visibility = Visibility.Visible;
+        AttachmentPreviewHint.Text = _allAttachments.Count == 0
+            ? "This message has no attachments."
+            : "Select an attachment to preview it.";
+    }
+
+    /// <summary>
+    /// Previews the selected attachment. Rendering happens from the stored bytes
+    /// with no network access of any kind — an attachment is untrusted input, and
+    /// the preview must not become a way for it to reach out.
+    /// </summary>
+    void OnAttachmentSelected(object sender, SelectionChangedEventArgs e)
+    {
+        ClearAttachmentPreview();
         if (AttachmentList.SelectedItem is not AttachmentItem item ||
             item.Mailbox is not MailboxHandle mailbox)
             return;
+
+        if (_settings?.GetBool(SettingsCatalog.PreviewAttachments, ChainFor(mailbox)) == false)
+        {
+            AttachmentPreviewHint.Text = "Preview is turned off for this mailbox.";
+            return;
+        }
+        if (!item.HasContent)
+        {
+            AttachmentPreviewHint.Text = "This attachment's content was not downloaded.";
+            return;
+        }
+
+        var limitKb = _settings?.GetInt(SettingsCatalog.PreviewSizeLimitKb, ChainFor(mailbox)) ?? 8192;
+        if (limitKb > 0 && item.SizeBytes > limitKb * 1024L)
+        {
+            AttachmentPreviewHint.Text =
+                $"{FormatBytes(item.SizeBytes)} exceeds the {limitKb:N0} KB preview limit. " +
+                "Save it to open it.";
+            return;
+        }
+
+        var content = MailboxStore.GetAttachmentContent(mailbox.Db, item.Id);
+        if (content is null)
+        {
+            AttachmentPreviewHint.Text = "Content missing from the local store.";
+            return;
+        }
+
+        var type = item.ContentType.ToLowerInvariant();
+        var name = item.Name.ToLowerInvariant();
+        try
+        {
+            if (type.StartsWith("image/") || name.EndsWith(".png") || name.EndsWith(".jpg") ||
+                name.EndsWith(".jpeg") || name.EndsWith(".gif") || name.EndsWith(".bmp"))
+            {
+                var image = new System.Windows.Media.Imaging.BitmapImage();
+                image.BeginInit();
+                image.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                // No network, no external references: decode the bytes we hold.
+                image.CreateOptions = System.Windows.Media.Imaging.BitmapCreateOptions.IgnoreColorProfile;
+                image.StreamSource = new MemoryStream(content);
+                image.EndInit();
+                image.Freeze();
+                AttachmentImage.Source = image;
+                AttachmentImage.Visibility = Visibility.Visible;
+                AttachmentPreviewHint.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            if (IsTextLike(type, name))
+            {
+                var text = Encoding.UTF8.GetString(content);
+                AttachmentText.Text = text.Length <= RawDisplayCap
+                    ? text
+                    : text[..RawDisplayCap] + $"{Environment.NewLine}… (truncated for display)";
+                AttachmentText.Visibility = Visibility.Visible;
+                AttachmentPreviewHint.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            AttachmentPreviewHint.Text =
+                $"No preview for {(item.ContentType.Length > 0 ? item.ContentType : "this type")}. " +
+                $"{FormatBytes(item.SizeBytes)} — save it to open it.";
+        }
+        catch (Exception ex)
+        {
+            AttachmentPreviewHint.Text = $"Could not preview this file: {ex.Message}";
+        }
+    }
+
+    static bool IsTextLike(string contentType, string fileName) =>
+        contentType.StartsWith("text/") ||
+        contentType is "application/json" or "application/xml" or "application/javascript" ||
+        fileName.EndsWith(".txt") || fileName.EndsWith(".log") || fileName.EndsWith(".csv") ||
+        fileName.EndsWith(".json") || fileName.EndsWith(".xml") || fileName.EndsWith(".md") ||
+        fileName.EndsWith(".eml") || fileName.EndsWith(".ics") || fileName.EndsWith(".yml") ||
+        fileName.EndsWith(".yaml") || fileName.EndsWith(".ini") || fileName.EndsWith(".config");
+
+    void OnSaveSelectedAttachment(object sender, RoutedEventArgs e) => SaveSelectedAttachment();
+
+    void SaveSelectedAttachment()
+    {
+        if (AttachmentList.SelectedItem is not AttachmentItem item ||
+            item.Mailbox is not MailboxHandle mailbox)
+        {
+            StatusText.Text = "Select an attachment first.";
+            return;
+        }
         if (!item.HasContent)
         {
             Log(LogLevel.Warning, $"Attachment '{item.Name}' has no stored content.");
             return;
         }
-        var dialog = new Microsoft.Win32.SaveFileDialog { FileName = item.Name };
-        if (dialog.ShowDialog(this) != true)
-            return;
+        var dialog = new Microsoft.Win32.SaveFileDialog { FileName = SafeFileName(item.Name) };
+        if (dialog.ShowDialog(this) != true) return;
         var content = MailboxStore.GetAttachmentContent(mailbox.Db, item.Id);
         if (content is null)
         {
@@ -1532,7 +1699,117 @@ public partial class MainWindow : Window
             return;
         }
         File.WriteAllBytes(dialog.FileName, content);
-        Log($"Saved attachment '{item.Name}' ({content.Length / 1024.0:N0} KB).");
+        Log($"Saved attachment '{item.Name}' ({FormatBytes(content.Length)}).");
+    }
+
+    /// <summary>Exports everything currently listed, honouring the inline filter.</summary>
+    void OnExportAllAttachments(object sender, RoutedEventArgs e)
+    {
+        var items = (AttachmentList.ItemsSource as IEnumerable<AttachmentItem>)?.ToList() ?? [];
+        if (items.Count == 0)
+        {
+            StatusText.Text = "Nothing to export.";
+            return;
+        }
+
+        var dialog = new Microsoft.Win32.OpenFolderDialog
+        {
+            Title = $"Export {items.Count:N0} attachment(s) to…",
+        };
+        if (dialog.ShowDialog(this) != true) return;
+
+        var written = 0;
+        var skipped = 0;
+        foreach (var item in items)
+        {
+            if (item.Mailbox is not MailboxHandle mailbox || !item.HasContent) { skipped++; continue; }
+            var content = MailboxStore.GetAttachmentContent(mailbox.Db, item.Id);
+            if (content is null) { skipped++; continue; }
+            try
+            {
+                // Never overwrite: two parts can share a filename, and silently
+                // losing one export to another is worse than a suffixed name.
+                var path = UniquePath(dialog.FolderName, SafeFileName(item.Name));
+                File.WriteAllBytes(path, content);
+                written++;
+            }
+            catch (Exception ex)
+            {
+                skipped++;
+                Log(LogLevel.Warning, $"Could not export '{item.Name}': {ex.Message}");
+            }
+        }
+        var summary = $"Exported {written:N0} attachment(s) to {dialog.FolderName}" +
+                      (skipped > 0 ? $" ({skipped:N0} skipped)" : "") + ".";
+        StatusText.Text = summary;
+        Log(summary);
+    }
+
+    /// <summary>
+    /// Strips path separators and reserved characters. An attachment filename
+    /// comes from whoever sent the message, so it is never trusted as a path.
+    /// </summary>
+    static string SafeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var cleaned = new string([.. name.Select(c => invalid.Contains(c) ? '_' : c)]).Trim();
+        return cleaned.Length == 0 ? "attachment" : cleaned;
+    }
+
+    static string UniquePath(string folder, string fileName)
+    {
+        var path = Path.Combine(folder, fileName);
+        if (!File.Exists(path)) return path;
+        var stem = Path.GetFileNameWithoutExtension(fileName);
+        var extension = Path.GetExtension(fileName);
+        for (var i = 2; ; i++)
+        {
+            var candidate = Path.Combine(folder, $"{stem} ({i}){extension}");
+            if (!File.Exists(candidate)) return candidate;
+        }
+    }
+
+    /// <summary>
+    /// Hands an attachment to its associated application. Off by default and
+    /// warned about: this is the step that turns a received file into a running
+    /// program, with none of this app's sandboxing.
+    /// </summary>
+    void OnOpenAttachment(object sender, RoutedEventArgs e)
+    {
+        if (_settings?.GetBool(SettingsCatalog.OpenAttachmentsExternally,
+                SettingTarget.Application) != true)
+            return;
+        if (AttachmentList.SelectedItem is not AttachmentItem item ||
+            item.Mailbox is not MailboxHandle mailbox || !item.HasContent)
+            return;
+
+        var confirm = MessageBox.Show(
+            this,
+            $"Open '{item.Name}' in its associated application?\n\n" +
+            "The file came from whoever sent this message and will run outside " +
+            "this app's protections.",
+            "eeeMail — open attachment",
+            MessageBoxButton.OKCancel, MessageBoxImage.Warning, MessageBoxResult.Cancel);
+        if (confirm != MessageBoxResult.OK) return;
+
+        var content = MailboxStore.GetAttachmentContent(mailbox.Db, item.Id);
+        if (content is null) return;
+        try
+        {
+            var path = UniquePath(Path.Combine(Path.GetTempPath(), "eeeMail"), SafeFileName(item.Name));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, content);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = path,
+                UseShellExecute = true,
+            });
+            Log(LogLevel.Warning, $"Opened attachment '{item.Name}' externally.");
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Error, $"Could not open '{item.Name}': {ex.Message}");
+        }
     }
 
     static int FindHeaderEnd(byte[] raw)

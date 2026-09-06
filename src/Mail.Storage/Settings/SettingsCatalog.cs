@@ -125,6 +125,49 @@ public static class SettingsCatalog
                  "outside deliberate analysis of a specific message.",
         Category: "Reading");
 
+    public static readonly SettingDefinition ShowInlineAttachments = new(
+        "read.show_inline_attachments",
+        "Show inline attachments",
+        "Inline parts are the images and signature graphics embedded in the " +
+        "message body. They are attachments technically, but listing them hides " +
+        "the file someone actually sent among a dozen logos.",
+        SettingKind.Bool, "false",
+        [Folder, Mailbox, Account, Application],
+        Category: "Reading");
+
+    public static readonly SettingDefinition PreviewAttachments = new(
+        "read.preview_attachments",
+        "Preview attachments",
+        "Show images, text and PDFs in the reading pane when selected, rather " +
+        "than only offering to save them.",
+        SettingKind.Bool, "true",
+        [Mailbox, Account, Application],
+        Category: "Reading");
+
+    public static readonly SettingDefinition PreviewSizeLimitKb = new(
+        "read.preview_size_limit_kb",
+        "Preview size limit (KB)",
+        "Attachments larger than this are not previewed automatically; they can " +
+        "still be opened on request.",
+        SettingKind.Int, "8192",
+        [Mailbox, Account, Application],
+        Risk: SettingRisk.Performance,
+        Category: "Reading");
+
+    public static readonly SettingDefinition OpenAttachmentsExternally = new(
+        "read.open_attachments_externally",
+        "Allow opening attachments in other applications",
+        "Adds an Open button that hands the file to whatever program Windows " +
+        "associates with it.",
+        SettingKind.Bool, "false",
+        [Application],
+        Risk: SettingRisk.Security,
+        Warning: "An attachment is untrusted input from whoever sent it. Opening " +
+                 "one hands it to another program with none of this app's " +
+                 "sandboxing — which is how a malicious document gets executed. " +
+                 "Saving and inspecting first is safer.",
+        Category: "Reading");
+
     public static readonly SettingDefinition MarkReadDelayMs = new(
         "read.mark_read_delay_ms",
         "Mark read after (ms)",
@@ -363,6 +406,8 @@ public static class SettingsCatalog
         SyncPolicy, SyncWindowMonths, SyncEnabled, MaxConcurrentDownloads,
         AutoSyncSeconds, LiveUpdates, SyncOnFocus, PurgeLocalOnRemove,
         LoadRemoteImages, AllowScripts, MarkReadDelayMs, DefaultReaderTab,
+        ShowInlineAttachments, PreviewAttachments, PreviewSizeLimitKb,
+        OpenAttachmentsExternally,
         DateTimeFormat, ListDateFormat, ReaderDateFormat, ShowAddressesNotNames,
         QuietFolderDays, RowDensity, ShowInFavourites, MessageColumns,
         DefaultComposeFormat, PreserveMessageId,

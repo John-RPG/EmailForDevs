@@ -187,6 +187,37 @@ if (args.Length > 0 && args[0].Equals("order", StringComparison.OrdinalIgnoreCas
     return;
 }
 
+if (args.Length > 0 && args[0].Equals("findattach", StringComparison.OrdinalIgnoreCase))
+{
+    foreach (var entry in MailboxRegistry.List(appDb, enabledOnly: true))
+    {
+        var path = Path.IsPathRooted(entry.DbPath) ? entry.DbPath : Path.GetFullPath(entry.DbPath);
+        if (!File.Exists(path)) continue;
+        using var db = MailboxDatabase.Open(path, entry.Dek);
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            SELECT m.id, m.subject, f.name,
+                   sum(CASE WHEN a.content_id IS NULL THEN 1 ELSE 0 END) AS files,
+                   sum(CASE WHEN a.content_id IS NOT NULL THEN 1 ELSE 0 END) AS inline
+            FROM attachments a
+            JOIN messages m ON m.id = a.message_id
+            JOIN folders f ON f.id = m.folder_id
+            GROUP BY m.id
+            HAVING files > 0 AND inline > 0
+            ORDER BY inline DESC LIMIT 5;
+            """;
+        using var reader = cmd.ExecuteReader();
+        var any = false;
+        while (reader.Read())
+        {
+            if (!any) { Console.WriteLine($"=== {entry.Upn} ==="); any = true; }
+            Console.WriteLine($"  msg {reader.GetInt64(0)} [{reader.GetString(2)}] files={reader.GetInt64(3)} inline={reader.GetInt64(4)}");
+            Console.WriteLine($"      {reader.GetString(1)}");
+        }
+    }
+    return;
+}
+
 if (args.Length > 0 && args[0].Equals("grantcap", StringComparison.OrdinalIgnoreCase))
 {
     // Records a capability as granted, but only after confirming the scopes are

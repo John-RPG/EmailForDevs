@@ -438,22 +438,77 @@
                                          FontFamily="Consolas" BorderThickness="0"/>
                             </TabItem>
                             <TabItem Header="Attachments">
-                                <ListView x:Name="AttachmentList" BorderThickness="0"
-                                          MouseDoubleClick="OnAttachmentSave"
-                                          ToolTip="Double-click an attachment to save it">
-                                    <ListView.View>
-                                        <GridView>
-                                            <GridViewColumn Header="Name" Width="260"
-                                                            DisplayMemberBinding="{Binding Name}"/>
-                                            <GridViewColumn Header="Type" Width="170"
-                                                            DisplayMemberBinding="{Binding ContentType}"/>
-                                            <GridViewColumn Header="KB" Width="70"
-                                                            DisplayMemberBinding="{Binding SizeKb}"/>
-                                            <GridViewColumn Header="Inline" Width="50"
-                                                            DisplayMemberBinding="{Binding Inline}"/>
-                                        </GridView>
-                                    </ListView.View>
-                                </ListView>
+                                <DockPanel>
+                                    <DockPanel DockPanel.Dock="Top" Margin="4">
+                                        <CheckBox x:Name="ShowInlineBox" Content="Show inline parts"
+                                                  VerticalAlignment="Center" Margin="0,0,12,0"
+                                                  Click="OnToggleInline"
+                                                  ToolTip="Inline parts are images embedded in the message body — usually logos and signature graphics rather than files anyone meant to send."
+                                                  AutomationProperties.AutomationId="attach-showinline"/>
+                                        <Button DockPanel.Dock="Right" Content="Export all…"
+                                                Padding="10,2" Click="OnExportAllAttachments"
+                                                ToolTip="Save every listed attachment to a folder"
+                                                AutomationProperties.AutomationId="attach-exportall"/>
+                                        <Button DockPanel.Dock="Right" Content="Save…" Margin="0,0,6,0"
+                                                Padding="10,2" Click="OnSaveSelectedAttachment"
+                                                ToolTip="Save the selected attachment"
+                                                AutomationProperties.AutomationId="attach-save"/>
+                                        <Button x:Name="OpenAttachmentButton" DockPanel.Dock="Right"
+                                                Content="Open" Margin="0,0,6,0" Padding="10,2"
+                                                Click="OnOpenAttachment" Visibility="Collapsed"
+                                                ToolTip="Open in the associated application"
+                                                AutomationProperties.AutomationId="attach-open"/>
+                                        <TextBlock x:Name="AttachmentSummary" VerticalAlignment="Center"
+                                                   Foreground="Gray"/>
+                                    </DockPanel>
+
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="*" MinHeight="80"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="2*"/>
+                                        </Grid.RowDefinitions>
+
+                                        <ListView x:Name="AttachmentList" Grid.Row="0" BorderThickness="0"
+                                                  MouseDoubleClick="OnAttachmentSave"
+                                                  SelectionChanged="OnAttachmentSelected"
+                                                  ToolTip="Double-click an attachment to save it">
+                                            <ListView.View>
+                                                <GridView>
+                                                    <GridViewColumn Header="Name" Width="240"
+                                                                    DisplayMemberBinding="{Binding Name}"/>
+                                                    <GridViewColumn Header="Type" Width="160"
+                                                                    DisplayMemberBinding="{Binding ContentType}"/>
+                                                    <GridViewColumn Header="KB" Width="70"
+                                                                    DisplayMemberBinding="{Binding SizeKb}"/>
+                                                    <GridViewColumn Header="Inline" Width="50"
+                                                                    DisplayMemberBinding="{Binding Inline}"/>
+                                                </GridView>
+                                            </ListView.View>
+                                        </ListView>
+
+                                        <GridSplitter Grid.Row="1" Height="5" HorizontalAlignment="Stretch"
+                                                      VerticalAlignment="Center" ShowsPreview="True"/>
+
+                                        <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="0,1,0,0">
+                                            <Grid>
+                                                <TextBlock x:Name="AttachmentPreviewHint"
+                                                           Text="Select an attachment to preview it."
+                                                           Foreground="Gray" Margin="8"
+                                                           VerticalAlignment="Top"/>
+                                                <Image x:Name="AttachmentImage" Margin="6"
+                                                       Stretch="Uniform" StretchDirection="DownOnly"
+                                                       Visibility="Collapsed"/>
+                                                <TextBox x:Name="AttachmentText" Margin="0"
+                                                         IsReadOnly="True" BorderThickness="0"
+                                                         FontFamily="Consolas" FontSize="11"
+                                                         VerticalScrollBarVisibility="Auto"
+                                                         HorizontalScrollBarVisibility="Auto"
+                                                         Visibility="Collapsed"/>
+                                            </Grid>
+                                        </Border>
+                                    </Grid>
+                                </DockPanel>
                             </TabItem>
                         </TabControl>
                         <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center"

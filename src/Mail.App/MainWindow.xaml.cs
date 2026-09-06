@@ -1394,6 +1394,19 @@ public partial class MainWindow : Window
 
     void OnSyncClick(object sender, RoutedEventArgs e) => StartSync();
 
+    /// <summary>
+    /// Opens the unified settings window. Values are written as they change, so
+    /// a reload afterwards is only needed when something structural moved.
+    /// </summary>
+    void OnSettingsClick(object sender, RoutedEventArgs e)
+    {
+        if (_appDb is null) return;
+        var window = new SettingsWindow(_appDb) { Owner = this };
+        window.ShowDialog();
+        if (window.ChangesApplied)
+            Log("Settings changed.");
+    }
+
     void OnAccountsClick(object sender, RoutedEventArgs e)
     {
         if (_appDb is null || _scratchRoot is null)

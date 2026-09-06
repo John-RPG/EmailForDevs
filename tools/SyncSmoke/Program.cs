@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using Mail.Storage;
 using Mail.Storage.Database;
+using Mail.Storage.Settings;
 using Mail.Storage.Security;
 using Mail.Sync.Auth;
 using Mail.Sync.Graph;
@@ -177,6 +178,59 @@ if (args.Contains("autodiscover", StringComparer.OrdinalIgnoreCase))
             }
         }
         catch (Exception ex) { Console.WriteLine($"  request failed: {ex.Message}"); }
+    }
+    return;
+}
+
+if (args.Contains("settings", StringComparer.OrdinalIgnoreCase))
+{
+    // Walks the real store against the live profile, so inheritance is checked
+    // on actual account/mailbox ids rather than only in unit tests.
+    var store = new SettingsStore(appDb);
+    var entries = MailboxRegistry.List(appDb);
+    var work = entries.FirstOrDefault(e => e.Upn.Contains("ExampleCorp", StringComparison.OrdinalIgnoreCase))
+               ?? entries.First();
+
+    var accountTarget = SettingTarget.Account(work.AccountId);
+    var mailboxTarget = SettingTarget.Mailbox(work.Id);
+    SettingTarget[] chain = [mailboxTarget, accountTarget, SettingTarget.Application];
+
+    void Show(string label)
+    {
+        var r = store.Resolve(SettingsCatalog.LoadRemoteImages, chain);
+        Console.WriteLine($"  {label,-34} value={r.Value,-14} from={r.Source,-11} default={r.IsDefault}");
+    }
+
+    Console.WriteLine($"=== {work.Upn} (mailbox {work.Id}, account {work.AccountId}) ===");
+    Show("initial");
+
+    store.Set(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Application, "always");
+    Show("after application=always");
+
+    store.Set(SettingsCatalog.LoadRemoteImages.Key, accountTarget, "known senders");
+    Show("after account=known senders");
+
+    store.Set(SettingsCatalog.LoadRemoteImages.Key, mailboxTarget, "never");
+    Show("after mailbox=never");
+
+    store.Clear(SettingsCatalog.LoadRemoteImages.Key, mailboxTarget);
+    Show("after clearing mailbox");
+
+    store.Clear(SettingsCatalog.LoadRemoteImages.Key, accountTarget);
+    Show("after clearing account");
+
+    store.Clear(SettingsCatalog.LoadRemoteImages.Key, SettingTarget.Application);
+    Show("after clearing application");
+
+    Console.WriteLine();
+    Console.WriteLine("Overrides carried over by the V4 migration:");
+    foreach (var entry in entries)
+    {
+        var overrides = store.Overrides(SettingTarget.Mailbox(entry.Id));
+        if (overrides.Count == 0) continue;
+        Console.WriteLine($"  {entry.Upn}");
+        foreach (var (key, value) in overrides)
+            Console.WriteLine($"      {key} = {value}");
     }
     return;
 }

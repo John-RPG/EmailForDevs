@@ -69,6 +69,16 @@ public static class SettingsCatalog
                  "delays mail rather than hastening it.",
         Category: "Sync");
 
+    public static readonly SettingDefinition LiveUpdates = new(
+        "sync.live_updates",
+        "Live updates (no polling)",
+        "Hold a connection open so the server can say the moment mail arrives, " +
+        "instead of asking on a timer. Falls back to periodic checks where the " +
+        "account does not support it.",
+        SettingKind.Bool, "true",
+        [Mailbox, Account, Application],
+        Category: "Sync");
+
     public static readonly SettingDefinition SyncOnFocus = new(
         "sync.on_window_focus",
         "Check when the window is focused",
@@ -351,7 +361,7 @@ public static class SettingsCatalog
     public static readonly IReadOnlyList<SettingDefinition> All =
     [
         SyncPolicy, SyncWindowMonths, SyncEnabled, MaxConcurrentDownloads,
-        AutoSyncSeconds, SyncOnFocus, PurgeLocalOnRemove,
+        AutoSyncSeconds, LiveUpdates, SyncOnFocus, PurgeLocalOnRemove,
         LoadRemoteImages, AllowScripts, MarkReadDelayMs, DefaultReaderTab,
         DateTimeFormat, ListDateFormat, ReaderDateFormat, ShowAddressesNotNames,
         QuietFolderDays, RowDensity, ShowInFavourites, MessageColumns,

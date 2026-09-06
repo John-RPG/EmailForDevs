@@ -202,6 +202,51 @@ before it can be added, and that call is the same permission check Exchange
 applies to the user in OWA — so the app can never read mail its user could not
 read themselves. Typed-address entry works with no discovery scopes at all.
 
+## Live updates: a long poll, not polling
+
+New mail arrives by holding a connection open, not by asking on a timer.
+
+The routes were measured rather than assumed:
+
+- **Graph change notifications** deliver to a public HTTPS endpoint or an Azure
+  Event Hub. A locally installed client has neither, so this is unavailable —
+  not merely inconvenient.
+- **Graph delta** is explicitly a pull model with no wait semantics. Asking
+  repeatedly is all it offers.
+- **EWS streaming notifications** are exactly a long poll. `Subscribe` once, then
+  `GetStreamingEvents` holds the request open for up to 30 minutes and writes
+  events down it as they occur, returning when the window closes so the client
+  re-issues it. It uses the Exchange token already held for Autodiscover, so it
+  costs no additional permission.
+- **IMAP IDLE** would also work — Microsoft deprecated Basic auth for IMAP/POP,
+  not the protocols — but needs `IMAP.AccessAsUser.All` on the registration. It
+  is the route for non-Microsoft accounts later; it is not needed for these.
+
+Measured end to end: with a connection held open on the work mailbox, a message
+sent from another account produced `CreatedEvent, NewMailEvent, ModifiedEvent`
+**18.8 seconds later**, about thirteen seconds after the send was accepted.
+
+### Read the stream, do not read the response
+
+The first implementation called `ReadAsStringAsync`, which waits for the whole
+body — so every event sat unread until the window closed, and a 30-minute window
+was *worse* than a two-minute poll. The response is now read incrementally as
+chunks arrive and events are reported the moment they appear. The same test that
+showed 300s showed 18.8s afterwards.
+
+Two details that matter:
+
+- The buffer keeps only its tail. A 30-minute window otherwise accumulates
+  unbounded keep-alive traffic.
+- `ExchangeImpersonation` is sent only when the mailbox differs from the
+  signed-in account. Exchange rejects a request impersonating the very user it
+  is authenticated as — which is why subscribing to one's own mailbox failed
+  until the header was made conditional.
+
+Periodic checks remain as a fallback, configurable and defaulting to two
+minutes, for accounts where streaming is unavailable or the permission is not
+granted. Returning to the window also triggers a check.
+
 ## UI testing
 
 Screenshots show layout; they do not show what a control *is*. The accessibility

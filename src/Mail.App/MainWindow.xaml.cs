@@ -179,6 +179,7 @@ public partial class MainWindow : Window
             // and returning to the window also triggers a check, which is what
             // makes the poll interval matter less than it otherwise would.
             StartAutoSync();
+            StartLiveUpdates();
         };
         Activated += OnWindowActivated;
         Closed += (_, _) => CloseAll();
@@ -191,6 +192,7 @@ public partial class MainWindow : Window
     void StartAutoSync()
     {
         _autoSyncTimer?.Stop();
+        _doorbell?.Cancel();
         var seconds = _settings?.GetInt(
             SettingsCatalog.AutoSyncSeconds, SettingTarget.Application) ?? 120;
         if (seconds <= 0)
@@ -226,6 +228,131 @@ public partial class MainWindow : Window
     }
 
     DateTimeOffset _lastFocusSync = DateTimeOffset.MinValue;
+
+    CancellationTokenSource? _doorbell;
+
+    /// <summary>
+    /// Starts the live-update loop: hold a long poll open per account, and run a
+    /// delta pass whenever the server reports a change.
+    ///
+    /// This is not polling. EWS streaming notifications keep the request open
+    /// until something happens or the window closes, which is the only push-like
+    /// route available to a desktop client — Graph's own notifications need a
+    /// public HTTPS endpoint to deliver to.
+    /// </summary>
+    void StartLiveUpdates()
+    {
+        _doorbell?.Cancel();
+        _doorbell = new CancellationTokenSource();
+        var token = _doorbell.Token;
+
+        foreach (var accountUpn in _mailboxes
+                     .Select(m => m.AccountUpn.Length > 0 ? m.AccountUpn : m.Upn)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (_settings is not null &&
+                !_settings.GetBool(SettingsCatalog.LiveUpdates, SettingTarget.Application))
+                continue;
+            _ = RunDoorbellAsync(accountUpn, token);
+        }
+    }
+
+    async Task RunDoorbellAsync(string accountUpn, CancellationToken ct)
+    {
+        // Live updates need the Exchange audience, which the mailbox-lookup
+        // capability already grants. Without it, the periodic check stands.
+        if (_appDb is null ||
+            !MailboxRegistry.HasCapability(_appDb, accountUpn, AccountCapability.MappedLookup.Id))
+        {
+            Log(LogLevel.Verbose,
+                $"{accountUpn}: live updates need the mailbox-lookup permission; " +
+                "using periodic checks instead.");
+            return;
+        }
+
+        var stream = new MailboxEventStream(_http);
+        MailboxEventStream.Subscription? subscription = null;
+        var failures = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var token = await ExchangeTokenAsync(accountUpn);
+                if (token is null)
+                {
+                    Log(LogLevel.Verbose, $"{accountUpn}: no Exchange token; live updates off.");
+                    return;
+                }
+
+                subscription ??= await stream.SubscribeAsync(accountUpn, token, accountUpn, ct);
+                if (subscription is null)
+                {
+                    Log(LogLevel.Verbose,
+                        $"{accountUpn}: the server declined a live subscription; " +
+                        "using periodic checks.");
+                    return;
+                }
+
+                // Sync the moment events arrive, not when the window closes —
+                // otherwise a long window delays mail rather than delivering it.
+                var result = await stream.WaitForEventsAsync(
+                    subscription, token,
+                    onEvents: events => Dispatcher.InvokeAsync(() =>
+                    {
+                        Log(LogLevel.Info,
+                            $"{accountUpn}: server reported {string.Join(", ", events)} — syncing.");
+                        StartSync();
+                    }),
+                    ct: ct);
+                if (ct.IsCancellationRequested) return;
+                if (result.SubscriptionLapsed) subscription = null;   // re-subscribe
+                failures = 0;
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                // Back off rather than spinning: a laptop waking or a network
+                // change drops the connection, and retrying instantly helps
+                // nobody.
+                subscription = null;
+                failures++;
+                if (failures >= 5)
+                {
+                    Log(LogLevel.Warning,
+                        $"{accountUpn}: live updates stopped after repeated failures " +
+                        $"({ex.Message}). Periodic checks continue.");
+                    return;
+                }
+                try { await Task.Delay(TimeSpan.FromSeconds(15 * failures), ct); }
+                catch (OperationCanceledException) { return; }
+            }
+        }
+    }
+
+    /// <summary>Silent-only Exchange token; live updates must never cause a prompt.</summary>
+    async Task<string?> ExchangeTokenAsync(string accountUpn)
+    {
+        try
+        {
+            var auth = new GraphAuthenticator(
+                Path.Combine(_scratchRoot!, "msal.cache"),
+                () => new WindowInteropHelper(this).Handle);
+            var accounts = await auth.GetAccountsAsync();
+            var account = accounts.FirstOrDefault(a =>
+                string.Equals(a.Username, accountUpn, StringComparison.OrdinalIgnoreCase));
+            if (account is null) return null;
+            var result = await auth.AcquireSilentAsync(account, GraphAuthenticator.ExchangeScopes);
+            return result?.AccessToken;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
 
     void Log(string line) => Log(LogLevel.Info, line);
 
@@ -1801,7 +1928,8 @@ public partial class MainWindow : Window
         // Mailboxes or permissions may have changed, so reopen everything rather
         // than guessing which parts are still valid.
         Log("Settings changed — reloading mailboxes.");
-        StartAutoSync();   // the interval may have changed
+        StartAutoSync();     // the interval may have changed
+        StartLiveUpdates();  // and so may the accounts or the live-update setting
         foreach (var mailbox in _mailboxes)
             mailbox.Db.Dispose();
         _mailboxes.Clear();

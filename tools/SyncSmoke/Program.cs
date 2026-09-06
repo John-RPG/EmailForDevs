@@ -264,6 +264,181 @@ if (args.Contains("provewiring", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Contains("doorbell", StringComparer.OrdinalIgnoreCase))
+{
+    // End-to-end proof: hold the long poll open on the work account, send a
+    // message to it from another account, and see whether the server tells us
+    // before the window would have expired.
+    var dbAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    using var dbHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(6) };
+    var target = "user@example.com";
+
+    var acct = (await dbAuth.GetAccountsAsync())
+        .FirstOrDefault(a => a.Username.Equals(target, StringComparison.OrdinalIgnoreCase));
+    if (acct is null) { Console.WriteLine("work account not signed in"); return; }
+    var tok = await dbAuth.AcquireSilentAsync(acct, GraphAuthenticator.ExchangeScopes);
+    if (tok is null) { Console.WriteLine("no Exchange token"); return; }
+
+    var stream = new MailboxEventStream(dbHttp);
+    var sub = await stream.SubscribeAsync(target, tok.AccessToken, signedInAs: target);
+    if (sub is null) { Console.WriteLine("subscribe failed"); return; }
+    Console.WriteLine($"Subscribed to {target}. Holding the connection open…");
+
+    // Send from a personal account while the poll is held.
+    var senderAcct = (await dbAuth.GetAccountsAsync())
+        .FirstOrDefault(a => a.Username.Contains("hotmail", StringComparison.OrdinalIgnoreCase));
+    if (senderAcct is not null)
+    {
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(6));
+            try
+            {
+                var sendTok = await dbAuth.AcquireSilentAsync(senderAcct);
+                if (sendTok is null) { Console.WriteLine("  (sender has no token)"); return; }
+                var g = new GraphServiceClient(new BaseBearerTokenAuthenticationProvider(
+                    new GraphTokenProvider(dbAuth, sendTok)));
+                var draft = new Mail.Core.Compose.Draft(
+                    senderAcct.Username, [target], [], [],
+                    $"eeeMail doorbell test {DateTime.Now:HH:mm:ss}",
+                    "Sent to prove the live-update long poll fires.");
+                var mime = Mail.Core.Compose.ReplyBuilder.ToMimeMessage(draft);
+                using var ms = new MemoryStream();
+                await mime.WriteToAsync(ms);
+                using var req = new HttpRequestMessage(HttpMethod.Post,
+                    "https://graph.microsoft.com/v1.0/me/sendMail");
+                req.Headers.Authorization = new("Bearer", sendTok.AccessToken);
+                req.Content = new StringContent(
+                    Convert.ToBase64String(ms.ToArray()),
+                    System.Text.Encoding.UTF8, "text/plain");
+                using var send = new HttpClient();
+                var resp = await send.SendAsync(req);
+                Console.WriteLine($"  [sender] sent from {senderAcct.Username}: HTTP {(int)resp.StatusCode}");
+            }
+            catch (Exception ex) { Console.WriteLine($"  [sender] failed: {ex.Message}"); }
+        });
+    }
+
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    var result = await stream.WaitForEventsAsync(sub, tok.AccessToken, connectionMinutes: 5,
+        onEvents: evts => Console.WriteLine(
+            $"  *** {sw.Elapsed.TotalSeconds:N1}s: {string.Join(", ", evts)} (delivered live)"));
+    sw.Stop();
+    Console.WriteLine($"Returned after {sw.Elapsed.TotalSeconds:N1}s");
+    Console.WriteLine($"  events: {(result.Events.Count == 0 ? "(none)" : string.Join(", ", result.Events))}");
+    Console.WriteLine($"  subscription lapsed: {result.SubscriptionLapsed}");
+    Console.WriteLine(result.Events.Count > 0
+        ? "  => the doorbell rang before the window closed: this is push, not polling."
+        : "  => quiet window (no change detected).");
+    return;
+}
+
+if (args.Contains("streamprobe", StringComparer.OrdinalIgnoreCase))
+{
+    // EWS streaming notifications are a long poll: Subscribe once, then
+    // GetStreamingEvents holds the connection open (up to 30 minutes) and
+    // writes events down it as they happen, returning when the window ends so
+    // the client re-issues it. That is push-shaped without needing a public
+    // endpoint — and it uses the EWS token we already hold for Autodiscover,
+    // so it costs no new permission.
+    var stAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+
+    foreach (var acct in await stAuth.GetAccountsAsync())
+    {
+        Console.WriteLine($"=== {acct.Username} ===");
+        AuthenticationResult? tok = null;
+        try { tok = await stAuth.AcquireSilentAsync(acct, GraphAuthenticator.ExchangeScopes); }
+        catch (Exception ex) { Console.WriteLine($"  token failed: {ex.Message.Split('.')[0]}"); }
+        if (tok is null) { Console.WriteLine("  no EWS token (scope not consented here)"); continue; }
+
+        const string ews = "https://outlook.office365.com/EWS/Exchange.asmx";
+
+        // 1. Subscribe to the inbox.
+        var subscribe = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+                           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+              <soap:Header>
+                <t:RequestServerVersion Version="Exchange2013"/>
+              </soap:Header>
+              <soap:Body>
+                <m:Subscribe>
+                  <m:StreamingSubscriptionRequest>
+                    <t:FolderIds><t:DistinguishedFolderId Id="inbox"/></t:FolderIds>
+                    <t:EventTypes>
+                      <t:EventType>NewMailEvent</t:EventType>
+                      <t:EventType>CreatedEvent</t:EventType>
+                      <t:EventType>ModifiedEvent</t:EventType>
+                      <t:EventType>DeletedEvent</t:EventType>
+                    </t:EventTypes>
+                  </m:StreamingSubscriptionRequest>
+                </m:Subscribe>
+              </soap:Body>
+            </soap:Envelope>
+            """;
+
+        string? subscriptionId = null;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, ews);
+            req.Headers.Authorization = new("Bearer", tok.AccessToken);
+            req.Content = new StringContent(subscribe, System.Text.Encoding.UTF8, "text/xml");
+            var resp = await http.SendAsync(req);
+            var body = await resp.Content.ReadAsStringAsync();
+            Console.WriteLine($"  Subscribe: HTTP {(int)resp.StatusCode}");
+
+            var sub = System.Text.RegularExpressions.Regex.Match(body, @"<[mt]:SubscriptionId>(.*?)</[mt]:SubscriptionId>");
+            if (sub.Success) subscriptionId = sub.Groups[1].Value;
+            else
+            {
+                var err = System.Text.RegularExpressions.Regex.Match(body, @"<faultstring[^>]*>(.*?)</faultstring>");
+                Console.WriteLine($"    no subscription. Response:");
+                Console.WriteLine(body.Length > 1600 ? body[..1600] : body);
+                continue;
+            }
+            Console.WriteLine($"    subscription id: {subscriptionId[..Math.Min(28, subscriptionId.Length)]}…");
+        }
+        catch (Exception ex) { Console.WriteLine($"  Subscribe failed: {ex.Message}"); continue; }
+
+        // 2. Hold the long poll open briefly to prove it stays connected.
+        var stream = $"""
+            <?xml version="1.0" encoding="utf-8"?>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+                           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+              <soap:Header><t:RequestServerVersion Version="Exchange2013"/></soap:Header>
+              <soap:Body>
+                <m:GetStreamingEvents>
+                  <m:SubscriptionIds><t:SubscriptionId>{subscriptionId}</t:SubscriptionId></m:SubscriptionIds>
+                  <m:ConnectionTimeout>1</m:ConnectionTimeout>
+                </m:GetStreamingEvents>
+              </soap:Body>
+            </soap:Envelope>
+            """;
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            using var req = new HttpRequestMessage(HttpMethod.Post, ews);
+            req.Headers.Authorization = new("Bearer", tok.AccessToken);
+            req.Content = new StringContent(stream, System.Text.Encoding.UTF8, "text/xml");
+            Console.WriteLine("  GetStreamingEvents: holding open (1 minute window)…");
+            var resp = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+            var body = await resp.Content.ReadAsStringAsync();
+            sw.Stop();
+            Console.WriteLine($"    returned after {sw.Elapsed.TotalSeconds:N1}s, HTTP {(int)resp.StatusCode}");
+            var status = System.Text.RegularExpressions.Regex.Match(body, @"<t:ConnectionStatus>(.*?)</t:ConnectionStatus>");
+            Console.WriteLine($"    connection status: {(status.Success ? status.Groups[1].Value : "(none)")}");
+            foreach (System.Text.RegularExpressions.Match ev in
+                     System.Text.RegularExpressions.Regex.Matches(body, @"<t:(\w+Event)>"))
+                Console.WriteLine($"    event: {ev.Groups[1].Value}");
+        }
+        catch (Exception ex) { Console.WriteLine($"  GetStreamingEvents failed: {ex.GetType().Name}: {ex.Message}"); }
+    }
+    return;
+}
+
 if (args.Contains("idleprobe", StringComparer.OrdinalIgnoreCase))
 {
     // Can we hold an IMAP IDLE connection using the OAuth token we already have?

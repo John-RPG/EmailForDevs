@@ -1126,7 +1126,10 @@ public partial class MainWindow : Window
         cmd.CommandText = RowSelect + " WHERE m.folder_id = @f ORDER BY m.received_at DESC LIMIT 5000;";
         cmd.Parameters.AddWithValue("@f", node.FolderId);
         FillList(node.Mailbox, cmd);
-        StatusText.Text = $"{node.Mailbox.Upn} / {node.Name}: {MessageGrid.Items.Count:N0} message(s)";
+        StatusText.Text =
+            $"{node.Mailbox.Upn} / {node.Name}: {MessageGrid.Items.Count:N0} message(s)" +
+            LocalFolderSizeSuffix(node.Mailbox, node.FolderId);
+        _ = ShowServerFolderSizeAsync(node);
     }
 
     void FillList(MailboxHandle mailbox, SqliteCommand cmd)
@@ -1576,8 +1579,13 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Bytes at a readable scale. Mailboxes reach gigabytes, and "6,451.6 MB"
+    /// is a number the reader has to convert themselves.
+    /// </summary>
     static string FormatBytes(long bytes) =>
-        bytes >= 1L << 20 ? $"{bytes / (double)(1L << 20):N1} MB"
+        bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):N2} GB"
+      : bytes >= 1L << 20 ? $"{bytes / (double)(1L << 20):N1} MB"
       : bytes >= 1024 ? $"{bytes / 1024.0:N0} KB"
       : $"{bytes:N0} bytes";
 
@@ -1818,6 +1826,72 @@ public partial class MainWindow : Window
             Log(LogLevel.Error, $"Could not open '{item.Name}': {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Bytes actually stored locally for a folder. Free — it is a sum over rows
+    /// this app already holds — so it shows immediately while the server figure
+    /// is fetched.
+    /// </summary>
+    static string LocalFolderSizeSuffix(MailboxHandle mailbox, long folderId)
+    {
+        try
+        {
+            using var cmd = mailbox.Db.CreateCommand();
+            cmd.CommandText = "SELECT coalesce(sum(size), 0) FROM messages WHERE folder_id = @f;";
+            cmd.Parameters.AddWithValue("@f", folderId);
+            var bytes = Convert.ToInt64(cmd.ExecuteScalar());
+            return bytes > 0 ? $" · {FormatBytes(bytes)} held" : "";
+        }
+        catch (Exception)
+        {
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// Appends the server's size for the folder. Graph does not report folder
+    /// bytes, so this comes from EWS with the token already held for live
+    /// updates; without that capability the local figure stands alone.
+    /// </summary>
+    async Task ShowServerFolderSizeAsync(FolderNode node)
+    {
+        if (_appDb is null || node.Mailbox is not MailboxHandle mailbox) return;
+        var accountUpn = mailbox.AccountUpn.Length > 0 ? mailbox.AccountUpn : mailbox.Upn;
+        if (!MailboxRegistry.HasCapability(_appDb, accountUpn, AccountCapability.MappedLookup.Id))
+            return;
+
+        try
+        {
+            // Cached per mailbox: one EWS call covers every folder, and folder
+            // sizes do not move fast enough to be worth re-fetching per click.
+            if (!_folderSizes.TryGetValue(mailbox.Upn, out var sizes))
+            {
+                var token = await ExchangeTokenAsync(accountUpn);
+                if (token is null) return;
+                sizes = await new MailboxFolderSizes(_http)
+                    .GetAsync(mailbox.Upn, token, accountUpn);
+                if (sizes.Count == 0) return;
+                _folderSizes[mailbox.Upn] = sizes;
+            }
+
+            if (!sizes.TryGetValue(node.Name, out var size) || size.Bytes <= 0) return;
+            // Only update if the user is still on the folder we fetched for.
+            if (FolderTree.SelectedItem is not FolderNodeViewModel current ||
+                current.FolderId != node.FolderId) return;
+
+            StatusText.Text =
+                $"{mailbox.Upn} / {node.Name}: {MessageGrid.Items.Count:N0} message(s)" +
+                LocalFolderSizeSuffix(mailbox, node.FolderId) +
+                $" · {FormatBytes(size.Bytes)} on server";
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Verbose, $"Folder size unavailable: {ex.Message}");
+        }
+    }
+
+    readonly Dictionary<string, IReadOnlyDictionary<string, MailboxFolderSizes.FolderSize>>
+        _folderSizes = new(StringComparer.OrdinalIgnoreCase);
 
     static int FindHeaderEnd(byte[] raw)
     {

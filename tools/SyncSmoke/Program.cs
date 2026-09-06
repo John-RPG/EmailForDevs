@@ -218,6 +218,129 @@ if (args.Length > 0 && args[0].Equals("findattach", StringComparison.OrdinalIgno
     return;
 }
 
+if (args.Length > 0 && args[0].Equals("sizeprobe", StringComparison.OrdinalIgnoreCase))
+{
+    // Folder byte size and mailbox quota are not in Graph — they live in
+    // Exchange. EWS exposes folder size as an extended property
+    // (PR_MESSAGE_SIZE_EXTENDED, 0x0E08) and quota via GetUserConfiguration or
+    // the mailbox's ServerVersionInfo. Check what we can actually read with the
+    // EWS token we already hold.
+    var szAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    using var szHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+    var who = args.Length > 1 ? args[1] : "user@example.com";
+
+    var acct = (await szAuth.GetAccountsAsync())
+        .FirstOrDefault(a => a.Username.Equals(who, StringComparison.OrdinalIgnoreCase));
+    if (acct is null) { Console.WriteLine($"{who} not signed in"); return; }
+    var tok = await szAuth.AcquireSilentAsync(acct, GraphAuthenticator.ExchangeScopes);
+    if (tok is null) { Console.WriteLine("no EWS token"); return; }
+
+    const string ews = "https://outlook.office365.com/EWS/Exchange.asmx";
+
+    async Task<string?> Post(string body)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, ews);
+        req.Headers.Authorization = new("Bearer", tok.AccessToken);
+        req.Content = new StringContent(body, System.Text.Encoding.UTF8, "text/xml");
+        var resp = await szHttp.SendAsync(req);
+        var text = await resp.Content.ReadAsStringAsync();
+        Console.WriteLine($"  HTTP {(int)resp.StatusCode}");
+        return resp.IsSuccessStatusCode ? text : text[..Math.Min(400, text.Length)];
+    }
+
+    // 1. Folder sizes via the extended property.
+    Console.WriteLine("--- folder sizes (PR_MESSAGE_SIZE_EXTENDED) ---");
+    var folders = await Post("""
+        <?xml version="1.0" encoding="utf-8"?>
+        <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                       xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+                       xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+          <soap:Header><t:RequestServerVersion Version="Exchange2013"/></soap:Header>
+          <soap:Body>
+            <m:FindFolder Traversal="Deep">
+              <m:FolderShape>
+                <t:BaseShape>IdOnly</t:BaseShape>
+                <t:AdditionalProperties>
+                  <t:FieldURI FieldURI="folder:DisplayName"/>
+                  <t:FieldURI FieldURI="folder:TotalCount"/>
+                  <t:ExtendedFieldURI PropertyTag="0x0E08" PropertyType="Long"/>
+                </t:AdditionalProperties>
+              </m:FolderShape>
+              <m:ParentFolderIds><t:DistinguishedFolderId Id="msgfolderroot"/></m:ParentFolderIds>
+            </m:FindFolder>
+          </soap:Body>
+        </soap:Envelope>
+        """);
+
+    if (folders is not null)
+    {
+        var names = System.Text.RegularExpressions.Regex.Matches(folders, @"<t:DisplayName>(.*?)</t:DisplayName>");
+        var sizes = System.Text.RegularExpressions.Regex.Matches(folders, @"<t:Value>(\d+)</t:Value>");
+        Console.WriteLine($"  folders returned: {names.Count}, size values: {sizes.Count}");
+        for (var i = 0; i < Math.Min(10, names.Count); i++)
+        {
+            var size = i < sizes.Count ? long.Parse(sizes[i].Groups[1].Value) : -1;
+            Console.WriteLine($"      {names[i].Groups[1].Value,-28} {(size < 0 ? "?" : $"{size / 1024.0 / 1024.0:N1} MB")}");
+        }
+    }
+
+    // 2. Mailbox quota.
+    Console.WriteLine("--- mailbox quota (GetMailTips / ServerVersionInfo) ---");
+    var quota = await Post($"""
+        <?xml version="1.0" encoding="utf-8"?>
+        <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                       xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+                       xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+          <soap:Header><t:RequestServerVersion Version="Exchange2013"/></soap:Header>
+          <soap:Body>
+            <m:GetMailTips>
+              <m:SendingAs><t:EmailAddress>{who}</t:EmailAddress></m:SendingAs>
+              <m:Recipients><t:Mailbox><t:EmailAddress>{who}</t:EmailAddress></t:Mailbox></m:Recipients>
+              <m:MailTipsRequested>MailboxFullStatus</m:MailTipsRequested>
+            </m:GetMailTips>
+          </soap:Body>
+        </soap:Envelope>
+        """);
+    if (quota is not null)
+    {
+        var full = System.Text.RegularExpressions.Regex.Match(quota, @"<t:MailboxFull>(.*?)</t:MailboxFull>");
+        Console.WriteLine($"  mailbox full: {(full.Success ? full.Groups[1].Value : "(not reported)")}");
+    }
+
+    // 3. Quota through the root folder's extended properties, which is where
+    //    Outlook reads it: 0x341C is the quota, 0x0E08 the size in use.
+    Console.WriteLine("--- quota via root folder extended properties ---");
+    var root2 = await Post("""
+        <?xml version="1.0" encoding="utf-8"?>
+        <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                       xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+                       xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+          <soap:Header><t:RequestServerVersion Version="Exchange2013"/></soap:Header>
+          <soap:Body>
+            <m:GetFolder>
+              <m:FolderShape>
+                <t:BaseShape>IdOnly</t:BaseShape>
+                <t:AdditionalProperties>
+                  <t:ExtendedFieldURI PropertyTag="0x0E08" PropertyType="Long"/>
+                  <t:ExtendedFieldURI PropertyTag="0x341C" PropertyType="Integer"/>
+                  <t:ExtendedFieldURI PropertyTag="0x6639" PropertyType="Integer"/>
+                </t:AdditionalProperties>
+              </m:FolderShape>
+              <m:FolderIds><t:DistinguishedFolderId Id="root"/></m:FolderIds>
+            </m:GetFolder>
+          </soap:Body>
+        </soap:Envelope>
+        """);
+    if (root2 is not null)
+    {
+        foreach (System.Text.RegularExpressions.Match m2 in System.Text.RegularExpressions.Regex.Matches(
+                     root2, @"PropertyTag=""(0x[0-9A-Fa-f]+)""[^>]*/>\s*<t:Value>(\d+)</t:Value>"))
+            Console.WriteLine($"      {m2.Groups[1].Value} = {m2.Groups[2].Value}");
+        if (!root2.Contains("<t:Value>")) Console.WriteLine("      (no values returned)");
+    }
+    return;
+}
+
 if (args.Length > 0 && args[0].Equals("grantcap", StringComparison.OrdinalIgnoreCase))
 {
     // Records a capability as granted, but only after confirming the scopes are

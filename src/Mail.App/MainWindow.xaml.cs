@@ -611,7 +611,8 @@ public partial class MainWindow : Window
         var hasFavourites = FavouritesTree.Items.Count > 0;
         FavouritesTree.Visibility = hasFavourites ? Visibility.Visible : Visibility.Collapsed;
         FavouritesHeader.Visibility = hasFavourites ? Visibility.Visible : Visibility.Collapsed;
-        FavouritesSplitter.Visibility = hasFavourites ? Visibility.Visible : Visibility.Collapsed;
+        // The favourites splitter is gone: AvalonDock supplies splitters between
+        // panes, so there is no hand-placed one left to show or hide.
 
         ApplyQuietFilter();
         // Auto-select the inbox only when nothing is selected yet: a rebuild

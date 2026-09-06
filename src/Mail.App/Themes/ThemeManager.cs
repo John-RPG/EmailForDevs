@@ -56,6 +56,13 @@ public static class ThemeManager
             };
             styles[StylesMarkerKey] = true;
             merged.Add(styles);
+
+            // AvalonDock's own chrome is light regardless of the app palette,
+            // so its surfaces are pointed at the theme brushes too.
+            merged.Add(new ResourceDictionary
+            {
+                Source = new Uri("pack://application:,,,/Themes/DockStyles.xaml", UriKind.Absolute),
+            });
         }
     }
 

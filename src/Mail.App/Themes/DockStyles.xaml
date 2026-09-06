@@ -1,0 +1,86 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:avalon="https://github.com/Dirkster99/AvalonDock"
+                    xmlns:controls="clr-namespace:AvalonDock.Controls;assembly=AvalonDock">
+
+    <!--
+        AvalonDock ships its own chrome, which is light regardless of the app
+        palette. These implicit styles point its surfaces at the theme brushes
+        so panes, titles and tabs follow light/dark like everything else.
+
+        Only the parts that are visibly wrong are restyled: AvalonDock's own
+        layout behaviour (dragging, floating, auto-hide) is left alone.
+    -->
+
+    <Style TargetType="{x:Type avalon:DockingManager}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <!-- The strip carrying a pane's title and its pin/close buttons. -->
+    <Style TargetType="{x:Type controls:LayoutAnchorableTabItem}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="{x:Type controls:LayoutDocumentTabItem}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="{x:Type controls:AnchorablePaneTitle}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="{x:Type controls:LayoutAnchorableControl}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="{x:Type controls:LayoutDocumentControl}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <!-- Panes and their containers. -->
+    <Style TargetType="{x:Type controls:LayoutAnchorablePaneControl}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+    </Style>
+
+    <Style TargetType="{x:Type controls:LayoutDocumentPaneControl}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+    </Style>
+
+    <!-- The splitter between panes: a hairline, not a slab. -->
+    <Style TargetType="{x:Type controls:LayoutGridResizerControl}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.BorderSubtle}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.BorderSubtle}"/>
+    </Style>
+
+    <!-- The auto-hide strip a pinned-away pane collapses into. -->
+    <Style TargetType="{x:Type controls:LayoutAnchorSideControl}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+    </Style>
+
+    <Style TargetType="{x:Type controls:LayoutAnchorGroupControl}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+    </Style>
+
+    <Style TargetType="{x:Type controls:LayoutAutoHideWindowControl}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+    </Style>
+
+    <!-- Floating windows, which are separate top-level windows and would
+         otherwise use the system default rather than the app theme. -->
+    <Style TargetType="{x:Type controls:LayoutFloatingWindowControl}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="{x:Type controls:NavigatorWindow}">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Raised}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+</ResourceDictionary>

@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         xmlns:local="clr-namespace:Mail.App"
+        xmlns:avalon="https://github.com/Dirkster99/AvalonDock"
         Title="eeeMail (dev)" Height="850" Width="1500" FontSize="12"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
@@ -230,179 +231,92 @@
             </TextBox>
         </DockPanel>
 
-        <Grid Grid.Row="1">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="260" MinWidth="150"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="*" MinWidth="400"/>
-            </Grid.ColumnDefinitions>
+        <avalon:DockingManager x:Name="Dock" Grid.Row="1"
+                               Background="{DynamicResource Chrome.Background}"
+                               DocumentPaneMenuItemHeaderTemplate="{x:Null}"
+                               AllowMixedOrientation="True">
+            <avalon:LayoutRoot>
+              <!-- One root panel: LayoutRoot accepts a single child, so the
+                   horizontal split and the log strip nest inside it. -->
+              <avalon:LayoutPanel Orientation="Vertical">
+                <avalon:LayoutPanel Orientation="Horizontal" DockHeight="*">
 
-            <Grid Grid.Column="0">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*" MinHeight="80"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="200" MinHeight="40"/>
-                </Grid.RowDefinitions>
-
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="4,2">
-                    <ToggleButton x:Name="HideQuietToggle" Content="Hide quiet"
-                                  Padding="6,1" Click="OnHideQuietChanged"
-                                  ToolTip="Hide folders with nothing received in the last month (favourites and folders with unread mail always stay)"/>
-                    <Button Content="Expand" Padding="6,1" Margin="4,0,0,0" Click="OnExpandAll"/>
-                    <Button Content="Collapse" Padding="6,1" Margin="4,0,0,0" Click="OnCollapseAll"/>
+                    <!-- Left: favourites, folders, activity log. Anchorables
+                         rather than documents, so each can be floated onto a
+                         second monitor or hidden entirely. -->
+                    <avalon:LayoutAnchorablePane DockWidth="280">
+                        <avalon:LayoutAnchorable Title="Folders" ContentId="folders"
+                                                 CanClose="False" CanHide="True">
+                            <DockPanel>
+                                <StackPanel xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,2">
+                    <ToggleButton x:Name="HideQuietToggle" Content="Hide quiet" Padding="6,1" Click="OnHideQuietChanged" ToolTip="Hide folders with nothing received in the last month (favourites and folders with unread mail always stay)" />
+                    <Button Content="Expand" Padding="6,1" Margin="4,0,0,0" Click="OnExpandAll" />
+                    <Button Content="Collapse" Padding="6,1" Margin="4,0,0,0" Click="OnCollapseAll" />
                 </StackPanel>
+                                <TextBlock xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="FavouritesHeader" DockPanel.Dock="Top" Text="  ★ Favourites" Background="{DynamicResource Chrome.Alt}" Foreground="{DynamicResource Text.Secondary}" Padding="2,3" FontWeight="Bold" Visibility="Collapsed" />
+                                <TreeView xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="FavouritesTree" DockPanel.Dock="Top" SelectedItemChanged="OnFavouriteSelected" BorderThickness="0,1,0,0" Grid.IsSharedSizeScope="True" MaxHeight="220" Visibility="Collapsed" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Center" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ItemContainerStyle="{DynamicResource FolderRowStyle}" ItemTemplate="{DynamicResource FolderRowTemplate}" />
+                                <TreeView xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="FolderTree"  SelectedItemChanged="OnFolderSelected" BorderThickness="0,1,0,0" ItemContainerStyle="{DynamicResource FolderRowStyle}" ItemTemplate="{DynamicResource FolderRowTemplate}" Grid.IsSharedSizeScope="True" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Center" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.HorizontalScrollBarVisibility="Disabled" />
+                            </DockPanel>
+                        </avalon:LayoutAnchorable>
+                    </avalon:LayoutAnchorablePane>
 
-                <TextBlock x:Name="FavouritesHeader" Grid.Row="1" Text="  ★ Favourites"
-                           Background="{DynamicResource Chrome.Alt}" Foreground="{DynamicResource Text.Secondary}" Padding="2,3"
-                           FontWeight="Bold" Visibility="Collapsed"/>
-
-                <TreeView x:Name="FavouritesTree" Grid.Row="2"
-                          SelectedItemChanged="OnFavouriteSelected" BorderThickness="0,1,0,0"
-                          Grid.IsSharedSizeScope="True"
-                          MaxHeight="220"
-                          Visibility="Collapsed"
-                          HorizontalContentAlignment="Stretch"
-                          VerticalContentAlignment="Center"
-                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                          ItemContainerStyle="{DynamicResource FolderRowStyle}"
-                          ItemTemplate="{DynamicResource FolderRowTemplate}"/>
-
-                <GridSplitter Grid.Row="3" Height="4" HorizontalAlignment="Stretch"
-                              VerticalAlignment="Center" ShowsPreview="True"
-                              Visibility="Collapsed" x:Name="FavouritesSplitter"/>
-
-                <TreeView x:Name="FolderTree" Grid.Row="4"
-                          SelectedItemChanged="OnFolderSelected" BorderThickness="0,1,0,0"
-                          ItemContainerStyle="{DynamicResource FolderRowStyle}"
-                          ItemTemplate="{DynamicResource FolderRowTemplate}"
-                          Grid.IsSharedSizeScope="True"
-                          HorizontalContentAlignment="Stretch"
-                          VerticalContentAlignment="Center"
-                          VirtualizingPanel.IsVirtualizing="True"
-                          VirtualizingPanel.VirtualizationMode="Recycling"
-                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
-
-                <GridSplitter Grid.Row="5" Height="5" HorizontalAlignment="Stretch"
-                              VerticalAlignment="Center" ShowsPreview="True"/>
-
-                <Expander Grid.Row="6" Header="Activity log" IsExpanded="True"
-                          BorderThickness="0,1,0,0">
-                    <DockPanel>
-                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="2">
-                            <ToggleButton x:Name="FltDebug" Content="⚙" ToolTip="Debug"
-                                          Padding="6,0" Margin="1,0" Click="OnLogFilterChanged"/>
-                            <ToggleButton x:Name="FltVerbose" Content="·" ToolTip="Verbose" IsChecked="True"
-                                          Padding="8,0" Margin="1,0" Click="OnLogFilterChanged"/>
-                            <ToggleButton x:Name="FltInfo" Content="ℹ" ToolTip="Info" IsChecked="True"
-                                          Padding="7,0" Margin="1,0" Click="OnLogFilterChanged"/>
-                            <ToggleButton x:Name="FltWarning" Content="⚠" ToolTip="Warning" IsChecked="True"
-                                          Padding="6,0" Margin="1,0" Click="OnLogFilterChanged"/>
-                            <ToggleButton x:Name="FltError" Content="✖" ToolTip="Error" IsChecked="True"
-                                          Padding="6,0" Margin="1,0" Click="OnLogFilterChanged"/>
-                            <Button Content="Clear" Margin="8,0,0,0" Padding="6,0" Click="OnLogClear"/>
-                        </StackPanel>
-                        <ListBox x:Name="ActivityLog" MinHeight="60" FontFamily="Consolas"
-                                 FontSize="11" BorderThickness="0"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Auto">
-                            <ListBox.ItemContainerStyle>
-                                <Style TargetType="ListBoxItem">
-                                    <Setter Property="Padding" Value="2,0"/>
-                                </Style>
-                            </ListBox.ItemContainerStyle>
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding Display}" Foreground="{Binding Brush}"
-                                               ToolTip="{Binding Message}"/>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                    </DockPanel>
-                </Expander>
-            </Grid>
-
-            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center"
-                          VerticalAlignment="Stretch" ShowsPreview="True"/>
-
-            <Grid Grid.Column="2">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="*" MinHeight="120"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*" MinHeight="120"/>
-                </Grid.RowDefinitions>
-
-                <DataGrid x:Name="MessageGrid" Grid.Row="0"
-                          AutoGenerateColumns="False" IsReadOnly="True"
-                          SelectionMode="Extended" SelectionUnit="FullRow"
-                          GridLinesVisibility="None" RowHeaderWidth="0"
-                          BorderThickness="0,1,0,0" HeadersVisibility="Column"
-                          EnableRowVirtualization="True"
-                          VirtualizingPanel.VirtualizationMode="Recycling"
-                          CanUserAddRows="False" CanUserDeleteRows="False"
-                          SelectionChanged="OnMessageSelected"
-                          PreviewKeyDown="OnGridKeyDown">
+                    <!-- Centre: the message list over the reader, as documents
+                         so they cannot be closed away by accident. -->
+                    <avalon:LayoutPanel Orientation="Vertical" DockWidth="*">
+                        <avalon:LayoutDocumentPane DockHeight="3*" DockMinHeight="150">
+                            <avalon:LayoutDocument Title="Messages" ContentId="messages"
+                                                   CanClose="False" CanFloat="True">
+                                <DataGrid xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="MessageGrid"  AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow" GridLinesVisibility="None" RowHeaderWidth="0" BorderThickness="0,1,0,0" HeadersVisibility="Column" EnableRowVirtualization="True" VirtualizingPanel.VirtualizationMode="Recycling" CanUserAddRows="False" CanUserDeleteRows="False" SelectionChanged="OnMessageSelected" PreviewKeyDown="OnGridKeyDown">
                     <DataGrid.RowStyle>
                         <Style TargetType="DataGridRow">
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsUnread}" Value="True">
-                                    <Setter Property="FontWeight" Value="Bold"/>
+                                    <Setter Property="FontWeight" Value="Bold" />
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </DataGrid.RowStyle>
                     <DataGrid.Columns>
-                        <DataGridTextColumn x:Name="ColStatus" Header=""
-                                            Binding="{Binding Status}" Width="Auto"
-                                            CanUserResize="False"/>
-                        <DataGridTextColumn x:Name="ColFrom" Header="From"
-                                            Binding="{Binding From}" Width="Auto"/>
-                        <DataGridTextColumn x:Name="ColFromName" Header="From Name"
-                                            Binding="{Binding FromName}" Width="Auto" Visibility="Collapsed"/>
-                        <DataGridTextColumn x:Name="ColFromAddress" Header="From Address"
-                                            Binding="{Binding FromAddress}" Width="Auto" Visibility="Collapsed"/>
-                        <DataGridTextColumn x:Name="ColTo" Header="To"
-                                            Binding="{Binding To}" Width="Auto"/>
-                        <DataGridTextColumn x:Name="ColReceived" Header="Received"
-                                            Binding="{Binding Received}" Width="Auto"
-                                            SortMemberPath="ReceivedValue"/>
-                        <DataGridTextColumn x:Name="ColSize" Header="KB"
-                                            Binding="{Binding SizeKb}" Width="Auto"
-                                            SortMemberPath="SizeVal">
+                        <DataGridTextColumn x:Name="ColStatus" Header="" Binding="{Binding Status}" Width="Auto" CanUserResize="False" />
+                        <DataGridTextColumn x:Name="ColFrom" Header="From" Binding="{Binding From}" Width="Auto" />
+                        <DataGridTextColumn x:Name="ColFromName" Header="From Name" Binding="{Binding FromName}" Width="Auto" Visibility="Collapsed" />
+                        <DataGridTextColumn x:Name="ColFromAddress" Header="From Address" Binding="{Binding FromAddress}" Width="Auto" Visibility="Collapsed" />
+                        <DataGridTextColumn x:Name="ColTo" Header="To" Binding="{Binding To}" Width="Auto" />
+                        <DataGridTextColumn x:Name="ColReceived" Header="Received" Binding="{Binding Received}" Width="Auto" SortMemberPath="ReceivedValue" />
+                        <DataGridTextColumn x:Name="ColSize" Header="KB" Binding="{Binding SizeKb}" Width="Auto" SortMemberPath="SizeVal">
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock">
-                                    <Setter Property="TextAlignment" Value="Right"/>
-                                    <Setter Property="Margin" Value="0,0,6,0"/>
+                                    <Setter Property="TextAlignment" Value="Right" />
+                                    <Setter Property="Margin" Value="0,0,6,0" />
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTextColumn x:Name="ColSubject" Header="Subject"
-                                            Binding="{Binding Subject}" Width="*"/>
+                        <DataGridTextColumn x:Name="ColSubject" Header="Subject" Binding="{Binding Subject}" Width="*" />
                     </DataGrid.Columns>
                     <DataGrid.ContextMenu>
                         <ContextMenu>
-                            <MenuItem Header="Reply" Click="OnReply"/>
-                            <MenuItem Header="Reply all" Click="OnReplyAll"/>
-                            <MenuItem Header="Forward" Click="OnForward"/>
-                            <Separator/>
-                            <MenuItem Header="Mark read" Click="OnMarkRead"/>
-                            <MenuItem Header="Mark unread" Click="OnMarkUnread"/>
-                            <MenuItem Header="Delete" InputGestureText="Del" Click="OnDeleteMessages"/>
+                            <MenuItem Header="Reply" Click="OnReply" />
+                            <MenuItem Header="Reply all" Click="OnReplyAll" />
+                            <MenuItem Header="Forward" Click="OnForward" />
+                            <Separator />
+                            <MenuItem Header="Mark read" Click="OnMarkRead" />
+                            <MenuItem Header="Mark unread" Click="OnMarkUnread" />
+                            <MenuItem Header="Delete" InputGestureText="Del" Click="OnDeleteMessages" />
                             <MenuItem x:Name="MoveToMenu" Header="Move to" SubmenuOpened="OnMoveToOpened">
-                                <MenuItem Header="(loading…)"/>
+                                <MenuItem Header="(loading…)" />
                             </MenuItem>
-                            <Separator/>
-                            <MenuItem x:Name="ColumnsMenu" Header="Columns"/>
+                            <Separator />
+                            <MenuItem x:Name="ColumnsMenu" Header="Columns" />
                         </ContextMenu>
                     </DataGrid.ContextMenu>
                 </DataGrid>
+                            </avalon:LayoutDocument>
+                        </avalon:LayoutDocumentPane>
 
-                <GridSplitter Grid.Row="1" Height="5" HorizontalAlignment="Stretch"
-                              VerticalAlignment="Center" ShowsPreview="True"/>
-
-                <Grid Grid.Row="2">
+                        <avalon:LayoutAnchorablePane DockHeight="4*" DockMinHeight="220">
+                            <avalon:LayoutAnchorable Title="Reading pane" ContentId="reader"
+                                                     CanClose="False" CanHide="True">
+                <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
@@ -517,8 +431,45 @@
                         <wv2:WebView2 x:Name="PreviewView" Grid.Column="2"/>
                     </Grid>
                 </Grid>
-            </Grid>
-        </Grid>
+                            </avalon:LayoutAnchorable>
+                        </avalon:LayoutAnchorablePane>
+                    </avalon:LayoutPanel>
+
+                </avalon:LayoutPanel>
+
+                <!-- Bottom: the activity log, in its own strip below both. -->
+                <avalon:LayoutAnchorablePaneGroup Orientation="Horizontal" DockHeight="140" DockMinHeight="80">
+                    <avalon:LayoutAnchorablePane>
+                        <avalon:LayoutAnchorable Title="Activity log" ContentId="log"
+                                                 CanClose="False" CanHide="True">
+                            <DockPanel xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="2">
+                            <ToggleButton x:Name="FltDebug" Content="⚙" ToolTip="Debug" Padding="6,0" Margin="1,0" Click="OnLogFilterChanged" />
+                            <ToggleButton x:Name="FltVerbose" Content="·" ToolTip="Verbose" IsChecked="True" Padding="8,0" Margin="1,0" Click="OnLogFilterChanged" />
+                            <ToggleButton x:Name="FltInfo" Content="ℹ" ToolTip="Info" IsChecked="True" Padding="7,0" Margin="1,0" Click="OnLogFilterChanged" />
+                            <ToggleButton x:Name="FltWarning" Content="⚠" ToolTip="Warning" IsChecked="True" Padding="6,0" Margin="1,0" Click="OnLogFilterChanged" />
+                            <ToggleButton x:Name="FltError" Content="✖" ToolTip="Error" IsChecked="True" Padding="6,0" Margin="1,0" Click="OnLogFilterChanged" />
+                            <Button Content="Clear" Margin="8,0,0,0" Padding="6,0" Click="OnLogClear" />
+                        </StackPanel>
+                        <ListBox x:Name="ActivityLog" MinHeight="60" FontFamily="Consolas" FontSize="11" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Padding" Value="2,0" />
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Display}" Foreground="{Binding Brush}" ToolTip="{Binding Message}" />
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </DockPanel>
+                        </avalon:LayoutAnchorable>
+                    </avalon:LayoutAnchorablePane>
+                </avalon:LayoutAnchorablePaneGroup>
+              </avalon:LayoutPanel>
+            </avalon:LayoutRoot>
+        </avalon:DockingManager>
 
         <StatusBar Grid.Row="2">
             <StatusBarItem>

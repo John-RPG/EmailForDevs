@@ -18,6 +18,7 @@ using Mail.Storage;
 using Mail.Storage.Database;
 using Mail.Storage.Settings;
 using Mail.Storage.Security;
+using AvalonDock.Layout;
 using Mail.Sync.Auth;
 using Microsoft.Identity.Client;
 using Mail.Sync.Graph;
@@ -197,6 +198,8 @@ public partial class MainWindow : Window
             OpenProfile();
             BuildColumnsMenu();
             UpdateDraftsButton();
+            SyncPaneMenuState();
+            SyncThemeMenuState();
             StartSync();
             // Delta is pull-only and Graph has no push route for a desktop
             // client — its change notifications require a public HTTPS endpoint
@@ -392,6 +395,125 @@ public partial class MainWindow : Window
         Themes.ThemeManager.Apply(Themes.ThemeManager.Parse(mode));
         Log(LogLevel.Verbose,
             $"Theme: {mode}{(mode == "system" ? $" (Windows is {(Themes.ThemeManager.IsDark ? "dark" : "light")})" : "")}.");
+    }
+
+    // ---- menu ---------------------------------------------------------------
+
+    void OnExit(object sender, RoutedEventArgs e) => Close();
+
+    void OnFocusSearchMenu(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Focus();
+        SearchBox.SelectAll();
+    }
+
+    /// <summary>
+    /// Shows or hides a docked pane. Docking lets a pane be closed, and a closed
+    /// pane with no way back would be a trap — so every one is listed under View
+    /// with its state reflected.
+    /// </summary>
+    void OnTogglePane(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem item || item.Tag is not string contentId) return;
+        var pane = Dock.Layout.Descendents()
+            .OfType<AvalonDock.Layout.LayoutAnchorable>()
+            .FirstOrDefault(a => a.ContentId == contentId);
+        if (pane is null) return;
+
+        if (item.IsChecked) pane.Show();
+        else pane.Hide();
+    }
+
+    /// <summary>Keeps the View menu honest when a pane is closed by its own X.</summary>
+    void SyncPaneMenuState()
+    {
+        foreach (var (item, contentId) in new[]
+                 {
+                     (ViewFolders, "folders"), (ViewReader, "reader"), (ViewLog, "log"),
+                 })
+        {
+            var pane = Dock.Layout.Descendents()
+                .OfType<AvalonDock.Layout.LayoutAnchorable>()
+                .FirstOrDefault(a => a.ContentId == contentId);
+            if (pane is not null) item.IsChecked = pane.IsVisible;
+        }
+    }
+
+    void OnThemeChosen(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem item || item.Tag is not string mode || _settings is null) return;
+        _settings.Set(SettingsCatalog.ThemeMode.Key, SettingTarget.Application, mode);
+        ApplyTheme();
+        SyncThemeMenuState();
+    }
+
+    /// <summary>Radio behaviour without RadioButton groups, which do not bind
+    /// cleanly to a setting.</summary>
+    void SyncThemeMenuState()
+    {
+        var mode = _settings?.GetString(SettingsCatalog.ThemeMode, SettingTarget.Application)
+            ?? "system";
+        ThemeSystem.IsChecked = mode == "system";
+        ThemeLight.IsChecked = mode == "light";
+        ThemeDark.IsChecked = mode == "dark";
+    }
+
+    /// <summary>
+    /// Returns the panes to their default arrangement. Docking is powerful
+    /// enough to make a mess with, so there has to be a way back.
+    /// </summary>
+    void OnResetLayout(object sender, RoutedEventArgs e)
+    {
+        // Every pane is shown again and the View menu re-synced. The arrangement
+        // itself is not persisted between sessions — AvalonDock 5 replaced its
+        // XML layout serializer with a DTO mapper that has no file I/O, and
+        // hand-rolling that is not worth guessing at — so a restart already
+        // returns the default arrangement.
+        foreach (var pane in Dock.Layout.Descendents()
+                     .OfType<AvalonDock.Layout.LayoutAnchorable>())
+            pane.Show();
+        SyncPaneMenuState();
+        Log("All panes shown. Pane sizes return to their defaults on restart.");
+    }
+
+    void OnShowSearchHelp(object sender, RoutedEventArgs e) =>
+        MessageBox.Show(this,
+            "Bare words search the full text of every message.\n\n" +
+            "Fields:  from: to: cc: bcc: subject: body: filename: in:\n" +
+            "Flags:   is:unread  is:read  is:flagged  has:attachment\n" +
+            "Dates:   after:2026-01-01  before:yesterday  on:today\n" +
+            "Size:    larger:2mb  smaller:100kb\n" +
+            "Logic:   AND is implied; use OR, and - or NOT to exclude\n" +
+            "Groups:  parentheses, e.g. from:john (is:unread OR has:attachment)\n" +
+            "Phrases: \"exact wording\"\n" +
+            "Wildcard: * matches any run of characters; \\* for a literal one",
+            "eeeMail — search syntax", MessageBoxButton.OK, MessageBoxImage.Information);
+
+    void OnShowShortcuts(object sender, RoutedEventArgs e) =>
+        MessageBox.Show(this,
+            "Ctrl+N        New message\n" +
+            "Ctrl+R        Reply\n" +
+            "Ctrl+Shift+R  Reply all\n" +
+            "Ctrl+F        Forward\n" +
+            "Del           Delete\n" +
+            "Ctrl+Q        Mark as read\n" +
+            "Ctrl+U        Mark as unread\n" +
+            "Ctrl+E        Search\n" +
+            "F5            Sync now\n" +
+            "Ctrl+,        Settings",
+            "eeeMail — keyboard shortcuts", MessageBoxButton.OK, MessageBoxImage.Information);
+
+    void OnShowAbout(object sender, RoutedEventArgs e)
+    {
+        var version = System.Reflection.Assembly.GetExecutingAssembly()
+            .GetName().Version?.ToString() ?? "dev";
+        MessageBox.Show(this,
+            $"eeeMail {version}\n\n" +
+            "A mail client that shows you what actually arrived: real addresses, " +
+            "real headers, real MIME.\n\n" +
+            "Mail is stored locally in encrypted SQLite databases, one per " +
+            "mailbox, with content-addressed deduplication.",
+            "About eeeMail", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     void Log(string line) => Log(LogLevel.Info, line);

@@ -161,11 +161,78 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <DockPanel Grid.Row="0" Margin="4,4,4,2">
+        <!-- A real menu bar: every command is reachable here, including the
+             ones the toolbar has no room for. Panel visibility lives under View
+             because docking lets panes be closed, and a closed pane with no way
+             back would be a trap. -->
+        <Menu Grid.Row="0" Padding="2,1">
+            <MenuItem Header="_File">
+                <MenuItem Header="_New message" Click="OnComposeNew" InputGestureText="Ctrl+N"/>
+                <MenuItem Header="_Drafts…" Click="OnDraftsClick"/>
+                <Separator/>
+                <MenuItem Header="Save _attachment…" Click="OnSaveSelectedAttachment"/>
+                <MenuItem Header="_Export all attachments…" Click="OnExportAllAttachments"/>
+                <Separator/>
+                <MenuItem Header="E_xit" Click="OnExit"/>
+            </MenuItem>
+
+            <MenuItem Header="_Edit">
+                <MenuItem Header="_Reply" Click="OnReply" InputGestureText="Ctrl+R"/>
+                <MenuItem Header="Reply _all" Click="OnReplyAll" InputGestureText="Ctrl+Shift+R"/>
+                <MenuItem Header="_Forward" Click="OnForward" InputGestureText="Ctrl+F"/>
+                <Separator/>
+                <MenuItem Header="Mark as re_ad" Click="OnMarkRead" InputGestureText="Ctrl+Q"/>
+                <MenuItem Header="Mark as _unread" Click="OnMarkUnread" InputGestureText="Ctrl+U"/>
+                <Separator/>
+                <MenuItem Header="_Delete" Click="OnDeleteMessages" InputGestureText="Del"/>
+                <Separator/>
+                <MenuItem Header="_Find…" Click="OnFocusSearchMenu" InputGestureText="Ctrl+E"/>
+            </MenuItem>
+
+            <MenuItem Header="_View">
+                <MenuItem x:Name="ViewFolders" Header="_Folders" IsCheckable="True"
+                          IsChecked="True" Click="OnTogglePane" Tag="folders"/>
+                <MenuItem x:Name="ViewReader" Header="_Reading pane" IsCheckable="True"
+                          IsChecked="True" Click="OnTogglePane" Tag="reader"/>
+                <MenuItem x:Name="ViewLog" Header="Activity _log" IsCheckable="True"
+                          IsChecked="True" Click="OnTogglePane" Tag="log"/>
+                <Separator/>
+                <MenuItem Header="_Expand all folders" Click="OnExpandAll"/>
+                <MenuItem Header="_Collapse all folders" Click="OnCollapseAll"/>
+                <Separator/>
+                <MenuItem Header="_Theme">
+                    <MenuItem x:Name="ThemeSystem" Header="Match _Windows" IsCheckable="True"
+                              Click="OnThemeChosen" Tag="system"/>
+                    <MenuItem x:Name="ThemeLight" Header="_Light" IsCheckable="True"
+                              Click="OnThemeChosen" Tag="light"/>
+                    <MenuItem x:Name="ThemeDark" Header="_Dark" IsCheckable="True"
+                              Click="OnThemeChosen" Tag="dark"/>
+                </MenuItem>
+                <Separator/>
+                <MenuItem Header="Reset layout" Click="OnResetLayout"
+                          ToolTip="Return the panes to their default arrangement"/>
+            </MenuItem>
+
+            <MenuItem Header="_Tools">
+                <MenuItem Header="_Sync now" Click="OnSyncClick" InputGestureText="F5"/>
+                <Separator/>
+                <MenuItem Header="_Settings…" Click="OnSettingsClick" InputGestureText="Ctrl+,"/>
+            </MenuItem>
+
+            <MenuItem Header="_Help">
+                <MenuItem Header="Search _syntax" Click="OnShowSearchHelp"/>
+                <MenuItem Header="_Keyboard shortcuts" Click="OnShowShortcuts"/>
+                <Separator/>
+                <MenuItem Header="_About eeeMail" Click="OnShowAbout"/>
+            </MenuItem>
+        </Menu>
+
+        <DockPanel Grid.Row="1" Margin="4,4,4,2">
             <!-- Compose actions, then actions on the selected message. Delete,
                  mark read and move were reachable only from the context menu,
                  so a new user could not find them at all. -->
@@ -191,23 +258,13 @@
             <Separator DockPanel.Dock="Left" Margin="0,2,10,2"/>
 
             <Button DockPanel.Dock="Left" Content="Delete" Click="OnDeleteMessages"
-                    Margin="0,0,4,0" Padding="10,2"
+                    Margin="0,0,10,0" Padding="10,2"
                     ToolTip="Move to Deleted Items (Del)"
                     AutomationProperties.AutomationId="cmd-delete"/>
-            <Button DockPanel.Dock="Left" Content="Read" Click="OnMarkRead"
-                    Margin="0,0,4,0" Padding="10,2" ToolTip="Mark as read (Ctrl+Q)"
-                    AutomationProperties.AutomationId="cmd-read"/>
-            <Button DockPanel.Dock="Left" Content="Unread" Click="OnMarkUnread"
-                    Margin="0,0,10,0" Padding="10,2" ToolTip="Mark as unread (Ctrl+U)"
-                    AutomationProperties.AutomationId="cmd-unread"/>
 
             <Button DockPanel.Dock="Right" Content="Search" Click="OnSearchClick"
                     Margin="4,0,0,0" Padding="10,2"
                     AutomationProperties.AutomationId="cmd-search"/>
-            <Button x:Name="SettingsButton" DockPanel.Dock="Right" Content="Settings…"
-                    Click="OnSettingsClick" Margin="4,0,0,0" Padding="10,2"
-                    ToolTip="Accounts, permissions, sync and display settings (Ctrl+,)"
-                    AutomationProperties.AutomationId="cmd-settings"/>
             <TextBox x:Name="SearchBox" KeyDown="OnSearchKeyDown"
                      VerticalContentAlignment="Center"
                      AutomationProperties.Name="Search">
@@ -231,7 +288,7 @@
             </TextBox>
         </DockPanel>
 
-        <avalon:DockingManager x:Name="Dock" Grid.Row="1"
+        <avalon:DockingManager x:Name="Dock" Grid.Row="2"
                                Background="{DynamicResource Chrome.Background}"
                                DocumentPaneMenuItemHeaderTemplate="{x:Null}"
                                AllowMixedOrientation="True">
@@ -475,7 +532,7 @@
             </avalon:LayoutRoot>
         </avalon:DockingManager>
 
-        <StatusBar Grid.Row="2">
+        <StatusBar Grid.Row="3">
             <StatusBarItem>
                 <TextBlock x:Name="StatusText" Text="Opening profile…"/>
             </StatusBarItem>

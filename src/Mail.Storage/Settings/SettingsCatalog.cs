@@ -55,6 +55,29 @@ public static class SettingsCatalog
                  "limiter throttles back — usually a net loss.",
         Category: "Sync");
 
+    public static readonly SettingDefinition AutoSyncSeconds = new(
+        "sync.auto_interval_seconds",
+        "Check for new mail every (seconds)",
+        "How often to ask the server what changed. Zero disables automatic " +
+        "checks, leaving Sync now.",
+        SettingKind.Int, "120",
+        [Account, Application],
+        Risk: SettingRisk.Performance,
+        Warning: "Graph offers no push for a desktop client — its change " +
+                 "notifications need a public HTTPS endpoint — so this is a poll. " +
+                 "Below about 60 seconds the service starts throttling, which " +
+                 "delays mail rather than hastening it.",
+        Category: "Sync");
+
+    public static readonly SettingDefinition SyncOnFocus = new(
+        "sync.on_window_focus",
+        "Check when the window is focused",
+        "Ask the server what changed whenever you return to the app, so coming " +
+        "back to it shows current mail without waiting for the next check.",
+        SettingKind.Bool, "true",
+        [Account, Application],
+        Category: "Sync");
+
     public static readonly SettingDefinition PurgeLocalOnRemove = new(
         "sync.purge_local_on_remove",
         "Delete local copy when removing a mailbox",
@@ -327,7 +350,8 @@ public static class SettingsCatalog
 
     public static readonly IReadOnlyList<SettingDefinition> All =
     [
-        SyncPolicy, SyncWindowMonths, SyncEnabled, MaxConcurrentDownloads, PurgeLocalOnRemove,
+        SyncPolicy, SyncWindowMonths, SyncEnabled, MaxConcurrentDownloads,
+        AutoSyncSeconds, SyncOnFocus, PurgeLocalOnRemove,
         LoadRemoteImages, AllowScripts, MarkReadDelayMs, DefaultReaderTab,
         DateTimeFormat, ListDateFormat, ReaderDateFormat, ShowAddressesNotNames,
         QuietFolderDays, RowDensity, ShowInFavourites, MessageColumns,

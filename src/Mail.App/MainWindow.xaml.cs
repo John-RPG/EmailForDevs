@@ -173,17 +173,59 @@ public partial class MainWindow : Window
             BuildColumnsMenu();
             UpdateDraftsButton();
             StartSync();
-            // Delta is pull-only: poll periodically so server-side changes
-            // (new mail, reads/moves made elsewhere) show up without a click.
-            _autoSyncTimer = new System.Windows.Threading.DispatcherTimer
-            {
-                Interval = TimeSpan.FromMinutes(2),
-            };
-            _autoSyncTimer.Tick += (_, _) => StartSync();
-            _autoSyncTimer.Start();
+            // Delta is pull-only and Graph has no push route for a desktop
+            // client — its change notifications require a public HTTPS endpoint
+            // — so new mail is found by asking. The interval is configurable,
+            // and returning to the window also triggers a check, which is what
+            // makes the poll interval matter less than it otherwise would.
+            StartAutoSync();
         };
+        Activated += OnWindowActivated;
         Closed += (_, _) => CloseAll();
     }
+
+    /// <summary>
+    /// Starts (or restarts) the periodic check, honouring the configured
+    /// interval. Zero disables it, leaving Sync now and the focus check.
+    /// </summary>
+    void StartAutoSync()
+    {
+        _autoSyncTimer?.Stop();
+        var seconds = _settings?.GetInt(
+            SettingsCatalog.AutoSyncSeconds, SettingTarget.Application) ?? 120;
+        if (seconds <= 0)
+        {
+            Log(LogLevel.Verbose, "Automatic mail checks are off.");
+            return;
+        }
+
+        // Below a minute the service throttles, which delays mail rather than
+        // hastening it — so the floor is enforced rather than merely documented.
+        seconds = Math.Max(seconds, 30);
+        _autoSyncTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(seconds),
+        };
+        _autoSyncTimer.Tick += (_, _) => StartSync();
+        _autoSyncTimer.Start();
+        Log(LogLevel.Verbose, $"Checking for new mail every {seconds:N0}s.");
+    }
+
+    /// <summary>
+    /// Returning to the window is a good moment to check: it is when the user
+    /// is about to look, and it costs one delta call against a cheap endpoint.
+    /// Rate-limited so alt-tabbing repeatedly does not hammer the service.
+    /// </summary>
+    void OnWindowActivated(object? sender, EventArgs e)
+    {
+        if (_settings is null || _syncRunning) return;
+        if (!_settings.GetBool(SettingsCatalog.SyncOnFocus, SettingTarget.Application)) return;
+        if (DateTimeOffset.UtcNow - _lastFocusSync < TimeSpan.FromSeconds(30)) return;
+        _lastFocusSync = DateTimeOffset.UtcNow;
+        StartSync();
+    }
+
+    DateTimeOffset _lastFocusSync = DateTimeOffset.MinValue;
 
     void Log(string line) => Log(LogLevel.Info, line);
 
@@ -1759,6 +1801,7 @@ public partial class MainWindow : Window
         // Mailboxes or permissions may have changed, so reopen everything rather
         // than guessing which parts are still valid.
         Log("Settings changed — reloading mailboxes.");
+        StartAutoSync();   // the interval may have changed
         foreach (var mailbox in _mailboxes)
             mailbox.Db.Dispose();
         _mailboxes.Clear();

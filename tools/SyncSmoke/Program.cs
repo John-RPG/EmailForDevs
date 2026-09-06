@@ -264,6 +264,60 @@ if (args.Contains("provewiring", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Contains("idleprobe", StringComparer.OrdinalIgnoreCase))
+{
+    // Can we hold an IMAP IDLE connection using the OAuth token we already have?
+    // Graph has no push option for a desktop client (webhooks need a public
+    // HTTPS endpoint), so IDLE is the only real-time route — but only if
+    // Outlook still serves IMAP to these accounts over XOAUTH2.
+    var idleAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    string[] imapScopes = ["https://outlook.office.com/IMAP.AccessAsUser.All"];
+
+    foreach (var acct in await idleAuth.GetAccountsAsync())
+    {
+        Console.WriteLine($"=== {acct.Username} ===");
+        AuthenticationResult? tok = null;
+        try { tok = await idleAuth.AcquireSilentAsync(acct, imapScopes); }
+        catch (Exception ex) { Console.WriteLine($"  no IMAP token: {ex.Message.Split('.')[0]}"); }
+        if (tok is null)
+        {
+            Console.WriteLine("  IMAP scope not consented — would need it added to the registration.");
+            continue;
+        }
+
+        using var client = new MailKit.Net.Imap.ImapClient();
+        try
+        {
+            await client.ConnectAsync("outlook.office365.com", 993,
+                MailKit.Security.SecureSocketOptions.SslOnConnect);
+            await client.AuthenticateAsync(
+                new MailKit.Security.SaslMechanismOAuth2(acct.Username, tok.AccessToken));
+            Console.WriteLine($"  connected. IDLE supported: {client.Capabilities.HasFlag(MailKit.Net.Imap.ImapCapabilities.Idle)}");
+
+            var inbox = client.Inbox;
+            await inbox.OpenAsync(MailKit.FolderAccess.ReadOnly);
+            Console.WriteLine($"  inbox: {inbox.Count:N0} messages, {inbox.Unread:N0} unread");
+
+            if (client.Capabilities.HasFlag(MailKit.Net.Imap.ImapCapabilities.Idle))
+            {
+                Console.WriteLine("  holding IDLE for 20s to prove the connection stays up…");
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var fired = false;
+                inbox.CountChanged += (_, _) => { fired = true; Console.WriteLine("  *** IDLE fired: message count changed"); };
+                try { await client.IdleAsync(timeout.Token); }
+                catch (OperationCanceledException) { }
+                Console.WriteLine($"  IDLE held cleanly (event fired during window: {fired})");
+            }
+            await client.DisconnectAsync(true);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  IMAP failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+    return;
+}
+
 if (args.Contains("drafts", StringComparer.OrdinalIgnoreCase))
 {
     var store = new DraftStore(appDb);

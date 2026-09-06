@@ -142,6 +142,9 @@ public partial class MainWindow : Window
 
     /// <summary>Resolves settings through folder → mailbox → account → application.</summary>
     SettingsStore? _settings;
+
+    /// <summary>Unsent messages, so closing compose does not discard them.</summary>
+    DraftStore? _drafts;
     long _currentMessageId;
 
     public MainWindow()
@@ -168,6 +171,7 @@ public partial class MainWindow : Window
         {
             OpenProfile();
             BuildColumnsMenu();
+            UpdateDraftsButton();
             StartSync();
             // Delta is pull-only: poll periodically so server-side changes
             // (new mail, reads/moves made elsewhere) show up without a click.
@@ -220,6 +224,7 @@ public partial class MainWindow : Window
             var masterKey = keyStore.Unlock();
             _appDb = AppDatabase.Open(Path.Combine(_scratchRoot, "profile", "app.db"), masterKey);
             _settings = new SettingsStore(_appDb);
+            _drafts = new DraftStore(_appDb);
 
             LoadMailboxHandles(repoRoot);
             LoadFavourites();
@@ -1533,7 +1538,7 @@ public partial class MainWindow : Window
         }
     }
 
-    void OpenCompose(Draft? seed)
+    void OpenCompose(Draft? seed, long draftId = 0)
     {
         if (_mailboxes.Count == 0)
         {
@@ -1541,8 +1546,90 @@ public partial class MainWindow : Window
             return;
         }
         var accounts = _mailboxes.Select(m => m.Upn).ToList();
-        var window = new ComposeWindow(accounts, SendAsync, seed) { Owner = this };
+        var window = new ComposeWindow(accounts, SendAsync, seed, _drafts, draftId)
+        {
+            Owner = this,
+        };
         window.ShowDialog();
+        UpdateDraftsButton();
+    }
+
+    /// <summary>
+    /// Shows how many unsent messages are waiting. A draft that is saved but
+    /// invisible is barely better than one that was lost.
+    /// </summary>
+    void UpdateDraftsButton()
+    {
+        var count = _drafts?.Count() ?? 0;
+        DraftsButton.Content = count == 0 ? "Drafts" : $"Drafts ({count:N0})";
+        DraftsButton.Visibility = count == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    /// <summary>Offers the saved drafts and reopens the chosen one.</summary>
+    void OnDraftsClick(object sender, RoutedEventArgs e)
+    {
+        if (_drafts is null) return;
+        var saved = _drafts.List();
+        if (saved.Count == 0)
+        {
+            StatusText.Text = "No saved drafts.";
+            UpdateDraftsButton();
+            return;
+        }
+
+        var menu = new ContextMenu();
+        foreach (var draft in saved)
+        {
+            var item = new MenuItem
+            {
+                Header = $"{draft.Display}  —  {draft.UpdatedAt.ToLocalTime():yyyy-MM-dd HH:mm}",
+                Tag = draft.Id,
+            };
+            item.Click += (_, _) => ResumeDraft(draft.Id);
+            menu.Items.Add(item);
+        }
+        menu.Items.Add(new Separator());
+        var discard = new MenuItem { Header = $"Discard all ({saved.Count:N0})" };
+        discard.Click += (_, _) => DiscardAllDrafts(saved.Count);
+        menu.Items.Add(discard);
+
+        menu.PlacementTarget = DraftsButton;
+        menu.IsOpen = true;
+    }
+
+    void ResumeDraft(long id)
+    {
+        if (_drafts?.Get(id) is not { } saved) return;
+        var seed = new Draft(
+            saved.From,
+            Split(saved.To), Split(saved.Cc), Split(saved.Bcc),
+            saved.Subject, saved.Body,
+            saved.InReplyTo,
+            saved.References is { Length: > 0 } refs
+                ? refs.Split(' ', StringSplitOptions.RemoveEmptyEntries) : null,
+            [.. saved.Attachments.Select(a =>
+                new DraftAttachment(a.FileName, a.ContentType, a.Content))],
+            saved.HtmlBody);
+        OpenCompose(seed, id);
+
+        static IReadOnlyList<string> Split(string value) =>
+            value.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries |
+                                    StringSplitOptions.TrimEntries);
+    }
+
+    void DiscardAllDrafts(int count)
+    {
+        if (_drafts is null) return;
+        var confirm = MessageBox.Show(
+            this,
+            $"Discard {count:N0} saved draft(s)? They cannot be recovered.",
+            "eeeMail — discard drafts",
+            MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.OK) return;
+
+        foreach (var draft in _drafts.List()) _drafts.Delete(draft.Id);
+        Log($"Discarded {count:N0} draft(s).");
+        UpdateDraftsButton();
     }
 
     /// <summary>

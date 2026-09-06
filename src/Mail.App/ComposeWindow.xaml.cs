@@ -6,6 +6,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Mail.Core.Compose;
 using Microsoft.Web.WebView2.Core;
+using Mail.Storage.Database;
 using MimeKit;
 
 namespace Mail.App;
@@ -27,17 +28,43 @@ public partial class ComposeWindow : Window
     bool _isRich;
     bool _editorReady;
 
+    /// <summary>Persists unsent work. Null when the caller wants no saving.</summary>
+    readonly DraftStore? _drafts;
+
+    /// <summary>Row this window owns, 0 until first saved. Kept so autosave
+    /// updates one row rather than accumulating a copy per keystroke burst.</summary>
+    long _draftId;
+
+    /// <summary>Set once the message is away, so closing does not re-save it.</summary>
+    bool _sent;
+
+    readonly System.Windows.Threading.DispatcherTimer _autosave = new()
+    {
+        Interval = TimeSpan.FromSeconds(10),
+    };
+
     /// <param name="accounts">Addresses that can appear in From.</param>
     /// <param name="send">Given the sending account address and the built message, delivers it.</param>
+    /// <param name="drafts">Where unsent work is kept; null disables saving.</param>
+    /// <param name="draftId">Row to resume, when reopening a saved draft.</param>
     public ComposeWindow(
         IReadOnlyList<string> accounts,
         Func<string, MimeMessage, Task> send,
-        Draft? seed = null)
+        Draft? seed = null,
+        DraftStore? drafts = null,
+        long draftId = 0)
     {
         InitializeComponent();
         _send = send;
         _seed = seed;
+        _drafts = drafts;
+        _draftId = draftId;
         AttachmentBox.ItemsSource = _attachments;
+
+        // Save periodically as well as on close: a crash or a power cut should
+        // not be worse than clicking the X, and both are why the draft exists.
+        _autosave.Tick += async (_, _) => await SaveDraftAsync(silent: true);
+        Closing += OnComposeClosing;
 
         foreach (var account in accounts)
             FromBox.Items.Add(account);
@@ -65,6 +92,9 @@ public partial class ComposeWindow : Window
         {
             if (_isRich)
                 await ShowRichEditorAsync(seed?.HtmlBody ?? "");
+            // Only start autosaving once the editor exists, or the first tick
+            // would read a body that has not been populated yet.
+            if (_drafts is not null) _autosave.Start();
             if (seed is null || seed.To.Count == 0)
                 ToBox.Focus();
             else if (!_isRich)
@@ -280,6 +310,92 @@ public partial class ComposeWindow : Window
         window.ShowDialog();
     }
 
+    /// <summary>
+    /// True when there is something worth keeping. An untouched window — opened
+    /// and closed, or a reply whose quoted text was never added to — should not
+    /// leave a draft behind to clean up later.
+    /// </summary>
+    async Task<bool> HasContentAsync()
+    {
+        if (ToBox.Text.Trim().Length > 0 || CcBox.Text.Trim().Length > 0 ||
+            BccBox.Text.Trim().Length > 0 || SubjectBox.Text.Trim().Length > 0 ||
+            _attachments.Count > 0)
+            return true;
+
+        var draft = await CurrentDraftAsync();
+        var body = (draft.HtmlBody ?? draft.Body).Trim();
+        if (body.Length == 0) return false;
+
+        // A reply arrives pre-filled with the quoted original; that alone is not
+        // the user having written something.
+        var seeded = (_seed?.HtmlBody ?? _seed?.Body ?? "").Trim();
+        return seeded.Length == 0 || body != seeded;
+    }
+
+    async Task SaveDraftAsync(bool silent)
+    {
+        if (_drafts is null || _sent) return;
+        try
+        {
+            if (!await HasContentAsync())
+            {
+                // Nothing worth keeping. Remove a row saved earlier, so emptying
+                // a draft and closing actually discards it.
+                if (_draftId != 0) { _drafts.Delete(_draftId); _draftId = 0; }
+                return;
+            }
+
+            var draft = await CurrentDraftAsync();
+            _draftId = _drafts.Save(new DraftStore.DraftRecord(
+                _draftId,
+                From: FromBox.SelectedItem as string ?? "",
+                To: ToBox.Text.Trim(),
+                Cc: CcBox.Text.Trim(),
+                Bcc: BccBox.Text.Trim(),
+                Subject: SubjectBox.Text.Trim(),
+                Body: draft.Body,
+                HtmlBody: draft.HtmlBody,
+                IsRich: _isRich,
+                InReplyTo: draft.InReplyTo,
+                References: draft.References is { Count: > 0 } refs
+                    ? string.Join(' ', refs) : null,
+                Attachments: [.. _attachments.Select(a =>
+                    new DraftStore.DraftFile(a.FileName, a.ContentType, a.Content))],
+                UpdatedAt: DateTimeOffset.UtcNow));
+
+            if (!silent) StatusText.Text = "Draft saved.";
+        }
+        catch (Exception ex)
+        {
+            // Never block closing on a save failure, but say so: silently losing
+            // the message is exactly what this exists to prevent.
+            StatusText.Text = $"Could not save the draft: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Saves on close. Deliberately without a prompt: the message is kept either
+    /// way, so asking would only be a chance to lose it by answering wrongly.
+    /// </summary>
+    async void OnComposeClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        _autosave.Stop();
+        if (_drafts is null || _sent) return;
+
+        // Closing cannot await, so cancel it, save, then close for real.
+        if (!_saving)
+        {
+            _saving = true;
+            e.Cancel = true;
+            await SaveDraftAsync(silent: true);
+            Close();
+        }
+    }
+
+    bool _saving;
+
+    void OnSaveDraft(object sender, RoutedEventArgs e) => _ = SaveDraftAsync(silent: false);
+
     async void OnSend(object sender, RoutedEventArgs e)
     {
         var message = await TryBuildAsync(msg => StatusText.Text = msg);
@@ -290,6 +406,10 @@ public partial class ComposeWindow : Window
         try
         {
             await _send(FromBox.SelectedItem as string ?? "", message);
+            // Sent: drop the saved copy, or it would reappear as unfinished work.
+            _sent = true;
+            _autosave.Stop();
+            if (_drafts is not null && _draftId != 0) _drafts.Delete(_draftId);
             DialogResult = true;
             Close();
         }

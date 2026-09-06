@@ -24,17 +24,17 @@
         <ComboBox x:Name="FromBox" Grid.Row="0" Grid.Column="1" Margin="0,2"/>
 
         <TextBlock Grid.Row="1" Grid.Column="0" Text="To" Margin="0,4,8,4" VerticalAlignment="Center"/>
-        <TextBox x:Name="ToBox" Grid.Row="1" Grid.Column="1" Margin="0,2"
+        <TextBox x:Name="ToBox" AutomationProperties.Name="To" Grid.Row="1" Grid.Column="1" Margin="0,2"
                  ToolTip="Comma or semicolon separated"/>
 
         <TextBlock Grid.Row="2" Grid.Column="0" Text="Cc" Margin="0,4,8,4" VerticalAlignment="Center"/>
-        <TextBox x:Name="CcBox" Grid.Row="2" Grid.Column="1" Margin="0,2"/>
+        <TextBox x:Name="CcBox" AutomationProperties.Name="Cc" Grid.Row="2" Grid.Column="1" Margin="0,2"/>
 
         <TextBlock Grid.Row="3" Grid.Column="0" Text="Bcc" Margin="0,4,8,4" VerticalAlignment="Center"/>
-        <TextBox x:Name="BccBox" Grid.Row="3" Grid.Column="1" Margin="0,2"/>
+        <TextBox x:Name="BccBox" AutomationProperties.Name="Bcc" Grid.Row="3" Grid.Column="1" Margin="0,2"/>
 
         <TextBlock Grid.Row="4" Grid.Column="0" Text="Subject" Margin="0,4,8,4" VerticalAlignment="Center"/>
-        <TextBox x:Name="SubjectBox" Grid.Row="4" Grid.Column="1" Margin="0,2"/>
+        <TextBox x:Name="SubjectBox" AutomationProperties.Name="Subject" Grid.Row="4" Grid.Column="1" Margin="0,2"/>
 
         <StackPanel Grid.Row="5" Grid.Column="1" Orientation="Horizontal" Margin="0,4">
             <Button Content="Attach…" Padding="10,2" Click="OnAttach"/>
@@ -50,7 +50,7 @@
         </StackPanel>
 
         <Grid Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,6">
-            <TextBox x:Name="BodyBox" AcceptsReturn="True" AcceptsTab="True" TextWrapping="Wrap"
+            <TextBox x:Name="BodyBox" AutomationProperties.Name="Message body" AcceptsReturn="True" AcceptsTab="True" TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/>
             <wv2:WebView2 x:Name="RichEditor" Visibility="Collapsed"/>
         </Grid>
@@ -62,9 +62,17 @@
                 <Button x:Name="ShowSourceButton" Content="Show MIME" Padding="12,4"
                         Click="OnShowSource"
                         ToolTip="Preview exactly what will be sent"/>
+                <Button x:Name="SaveDraftButton" Content="Save draft" Padding="12,4"
+                        Margin="8,0,0,0" Click="OnSaveDraft"
+                        ToolTip="Keep this message without sending. Drafts also save automatically."
+                        AutomationProperties.AutomationId="compose-savedraft"/>
                 <Button x:Name="SendButton" Content="Send" Padding="20,4" Margin="8,0,0,0"
-                        IsDefault="True" Click="OnSend"/>
-                <Button Content="Cancel" Padding="16,4" Margin="8,0,0,0" IsCancel="True"/>
+                        IsDefault="True" Click="OnSend"
+                        AutomationProperties.AutomationId="compose-send"/>
+                <!-- Closing keeps the draft, so this is "close", not "discard". -->
+                <Button Content="Close" Padding="16,4" Margin="8,0,0,0" IsCancel="True"
+                        ToolTip="Close and keep the draft"
+                        AutomationProperties.AutomationId="compose-close"/>
             </StackPanel>
         </DockPanel>
     </Grid>

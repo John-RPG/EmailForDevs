@@ -17,7 +17,31 @@ public static class AppDatabase
         return conn;
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4, V5, V6];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4, V5, V6, V7];
+
+    const string V7 = """
+        -- Unsent messages. In app.db rather than a mailbox database because a
+        -- draft is not yet mail: it has no server id, the account it will be
+        -- sent from can still change, and it must outlive a mailbox being
+        -- removed. Attachments are inline JSON — a draft is short-lived, and the
+        -- content-addressed blob store is for messages that actually exist.
+        CREATE TABLE drafts(
+            id                INTEGER PRIMARY KEY,
+            from_address      TEXT NOT NULL,
+            to_addresses      TEXT NOT NULL DEFAULT '',
+            cc_addresses      TEXT NOT NULL DEFAULT '',
+            bcc_addresses     TEXT NOT NULL DEFAULT '',
+            subject           TEXT NOT NULL DEFAULT '',
+            body              TEXT NOT NULL DEFAULT '',
+            html_body         TEXT,
+            is_rich           INTEGER NOT NULL DEFAULT 0,
+            in_reply_to       TEXT,
+            references_header TEXT,
+            attachments       TEXT NOT NULL DEFAULT '[]',
+            updated_at        INTEGER NOT NULL
+        );
+        CREATE INDEX ix_drafts_updated ON drafts(updated_at DESC);
+        """;
 
     const string V6 = """
         -- Integer settings could be stored unparseable before validation was

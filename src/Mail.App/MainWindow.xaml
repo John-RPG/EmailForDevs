@@ -180,6 +180,12 @@
                     Margin="0,0,10,0" Padding="10,2" ToolTip="Forward (Ctrl+F)"
                     AutomationProperties.AutomationId="cmd-forward"/>
 
+            <Button x:Name="DraftsButton" DockPanel.Dock="Left" Content="Drafts"
+                    Click="OnDraftsClick" Margin="0,0,10,0" Padding="10,2"
+                    Visibility="Collapsed"
+                    ToolTip="Unsent messages saved on this machine"
+                    AutomationProperties.AutomationId="cmd-drafts"/>
+
             <Separator DockPanel.Dock="Left" Margin="0,2,10,2"/>
 
             <Button DockPanel.Dock="Left" Content="Delete" Click="OnDeleteMessages"

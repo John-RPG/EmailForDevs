@@ -264,6 +264,23 @@ if (args.Contains("provewiring", StringComparer.OrdinalIgnoreCase))
     return;
 }
 
+if (args.Contains("drafts", StringComparer.OrdinalIgnoreCase))
+{
+    var store = new DraftStore(appDb);
+    var saved = store.List();
+    Console.WriteLine($"{saved.Count:N0} saved draft(s):");
+    foreach (var d in saved)
+    {
+        Console.WriteLine($"  [{d.Id}] {d.Display}");
+        Console.WriteLine($"      from={d.From} rich={d.IsRich} updated={d.UpdatedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
+        var body = (d.HtmlBody ?? d.Body).Replace("\r", " ").Replace("\n", " ");
+        Console.WriteLine($"      body: {body[..Math.Min(90, body.Length)]}");
+        if (d.Attachments.Count > 0)
+            Console.WriteLine($"      attachments: {string.Join(", ", d.Attachments.Select(a => a.FileName))}");
+    }
+    return;
+}
+
 if (args.Contains("settings", StringComparer.OrdinalIgnoreCase))
 {
     // Walks the real store against the live profile, so inheritance is checked

@@ -341,6 +341,18 @@ if (args.Length > 0 && args[0].Equals("sizeprobe", StringComparison.OrdinalIgnor
     return;
 }
 
+if (args.Length > 0 && args[0].Equals("theme", StringComparison.OrdinalIgnoreCase))
+{
+    var store = new SettingsStore(appDb);
+    if (args.Length > 1)
+    {
+        store.Set(SettingsCatalog.ThemeMode.Key, SettingTarget.Application, args[1]);
+        Console.WriteLine($"theme set to {args[1]}");
+    }
+    Console.WriteLine($"theme is now: {store.GetString(SettingsCatalog.ThemeMode, SettingTarget.Application)}");
+    return;
+}
+
 if (args.Length > 0 && args[0].Equals("grantcap", StringComparison.OrdinalIgnoreCase))
 {
     // Records a capability as granted, but only after confirming the scopes are

@@ -194,6 +194,29 @@ public static class SettingsCatalog
     /// so they are separate — <see cref="DateTimeFormat"/> keeps the old key and
     /// remains the fallback for anywhere neither applies.
     /// </summary>
+    public static readonly SettingDefinition ThemeMode = new(
+        "display.theme",
+        "Theme",
+        "Light, dark, or whatever Windows is set to. Both themes are checked " +
+        "against WCAG AA contrast, so text stays readable either way.",
+        SettingKind.Enum, "system",
+        [Application],
+        Choices: ["system", "light", "dark"],
+        Category: "Display");
+
+    public static readonly SettingDefinition ThemeMessageBodies = new(
+        "display.theme_message_bodies",
+        "Apply the theme to message bodies",
+        "Restyle HTML mail to match the app. Off shows the message exactly as " +
+        "it was sent, which is the honest rendering; the reading pane has a " +
+        "toggle either way.",
+        SettingKind.Bool, "false",
+        [Folder, Mailbox, Account, Application],
+        Warning: "Restyling changes how a message looks. Senders bake colours " +
+                 "into images and tables, so some mail reads worse this way — " +
+                 "which is why the reading pane keeps a per-message toggle.",
+        Category: "Display");
+
     public static readonly SettingDefinition DateTimeFormat = new(
         "display.datetime_format",
         "Date and time format",
@@ -408,6 +431,7 @@ public static class SettingsCatalog
         LoadRemoteImages, AllowScripts, MarkReadDelayMs, DefaultReaderTab,
         ShowInlineAttachments, PreviewAttachments, PreviewSizeLimitKb,
         OpenAttachmentsExternally,
+        ThemeMode, ThemeMessageBodies,
         DateTimeFormat, ListDateFormat, ReaderDateFormat, ShowAddressesNotNames,
         QuietFolderDays, RowDensity, ShowInFavourites, MessageColumns,
         DefaultComposeFormat, PreserveMessageId,

@@ -13,7 +13,7 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,10">
+        <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="{DynamicResource Text.Secondary}" Margin="0,0,0,10">
             Mailboxes Exchange has mapped to the account are listed first and can be added
             straight away. Anything below those is a suggestion, so its access is checked
             when you select it. If a mailbox you have rights to is missing, search the
@@ -63,6 +63,6 @@
         <!-- Its own row: the status line explains why a mailbox cannot be added,
              which is long, and must never be painted over by the buttons. -->
         <TextBlock x:Name="StatusLabel" Grid.Row="5" Margin="0,6,0,0"
-                   Foreground="Gray" TextWrapping="Wrap"/>
+                   Foreground="{DynamicResource Text.Secondary}" TextWrapping="Wrap"/>
     </Grid>
 </Window>

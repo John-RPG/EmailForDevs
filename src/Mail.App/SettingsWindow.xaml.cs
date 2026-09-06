@@ -131,9 +131,9 @@ public partial class SettingsWindow : Window
 
         public Brush RiskBrush => Definition.Risk switch
         {
-            SettingRisk.Performance => new SolidColorBrush(Color.FromRgb(0xB8, 0x6E, 0x00)),
-            SettingRisk.Security => new SolidColorBrush(Color.FromRgb(0xA0, 0x40, 0x00)),
-            SettingRisk.Destructive => new SolidColorBrush(Color.FromRgb(0xB0, 0x00, 0x00)),
+            SettingRisk.Performance => MainWindow.Themed("Risk.Performance", Brushes.DarkOrange),
+            SettingRisk.Security => MainWindow.Themed("Risk.Security", Brushes.OrangeRed),
+            SettingRisk.Destructive => MainWindow.Themed("Risk.Destructive", Brushes.Firebrick),
             _ => Brushes.Transparent,
         };
 

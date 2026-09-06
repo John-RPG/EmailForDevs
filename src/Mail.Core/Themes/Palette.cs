@@ -64,9 +64,9 @@ public static class Palette
         // Light: #1A1A1A on white is 17.4:1. Dark: #ABB2BF on #282C34 is 8.4:1,
         // comfortably past AA and near AAA without the halation of pure white.
         new("Text.Primary",          "#1A1A1A", "#ABB2BF", ColourRole.TextPrimary),
-        // Secondary still has to be readable: #595959 on white is 7.0:1, and
-        // #8A93A5 on #282C34 is 5.1:1.
-        new("Text.Secondary",        "#595959", "#8A93A5", ColourRole.TextSecondary),
+        // Secondary still has to be readable, with margin rather than scraping
+        // the threshold: #4A4A4A on white is 8.9:1, #A0A9BA on #282C34 is 5.9:1.
+        new("Text.Secondary",        "#4A4A4A", "#A0A9BA", ColourRole.TextSecondary),
 
         // ---- lines ---------------------------------------------------------
         new("Chrome.Border",         "#D0D0D0", "#3E4451", ColourRole.Border),
@@ -89,7 +89,13 @@ public static class Palette
         new("Status.Good",           "#1B7F3B", "#98C379", ColourRole.TextAlert),
     ];
 
-    /// <summary>Background each text colour is expected to sit on, for testing.</summary>
+    /// <summary>
+    /// Background each text colour is expected to sit on, for testing.
+    ///
+    /// Selected rows are included: a row that is readable until you click it is
+    /// still a contrast failure, and this was missed until dark mode showed
+    /// secondary text at 3.16:1 on a selection.
+    /// </summary>
     public static readonly IReadOnlyDictionary<string, string> TextOn =
         new Dictionary<string, string>
         {
@@ -100,6 +106,14 @@ public static class Palette
             ["Risk.Performance"] = "Chrome.Background",
             ["Status.Good"] = "Chrome.Background",
         };
+
+    /// <summary>
+    /// Text colours that must also work on a selected row. Selection uses the
+    /// primary colour deliberately — secondary cannot reach AA on a selection
+    /// tint without becoming indistinguishable from primary, and a selected row
+    /// should read more strongly anyway, not less.
+    /// </summary>
+    public static readonly IReadOnlyList<string> TextOnSelection = ["Text.Primary"];
 
     /// <summary>
     /// Dividers are checked separately: WCAG's 3:1 applies to the boundary of an

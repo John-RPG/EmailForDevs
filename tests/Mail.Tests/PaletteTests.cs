@@ -67,6 +67,26 @@ public sealed class PaletteTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Text_on_a_selected_row_meets_AA(bool dark)
+    {
+        // A row readable until you click it is still a contrast failure. This
+        // was missed until dark mode showed secondary text at 3.16:1 on a
+        // selection, which is why selection is now checked explicitly.
+        var selection = Palette.ByKey("Selection.Background")!;
+        foreach (var key in Palette.TextOnSelection)
+        {
+            var text = Palette.ByKey(key)!;
+            var ratio = Palette.ContrastRatio(
+                dark ? text.Dark : text.Light,
+                dark ? selection.Dark : selection.Light);
+            Assert.True(ratio >= NormalText,
+                $"{(dark ? "dark" : "light")} {key} on a selected row is {ratio:N2}:1");
+        }
+    }
+
     [Fact]
     public void Risk_colours_are_distinguishable_from_body_text()
     {

@@ -21,7 +21,7 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,10">
+        <TextBlock Grid.Row="0" TextWrapping="Wrap" Foreground="{DynamicResource Text.Secondary}" Margin="0,0,0,10">
             Each capability lists the permissions it costs and what you lose by refusing it.
             Nothing here grants access to mail you could not already read yourself — Exchange
             still decides that. Changes take effect after signing in again.
@@ -32,15 +32,15 @@
             <ComboBox x:Name="AccountCombo" Width="260" DockPanel.Dock="Left"
                       SelectionChanged="OnAccountChanged"/>
             <TextBlock x:Name="GrantedLabel" Margin="12,0,0,0" VerticalAlignment="Center"
-                       Foreground="Gray"/>
+                       Foreground="{DynamicResource Text.Secondary}"/>
         </DockPanel>
 
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto"
-                      BorderBrush="#DDD" BorderThickness="1" Padding="8">
+                      BorderBrush="{DynamicResource Chrome.Border}" BorderThickness="1" Padding="8">
             <ItemsControl x:Name="CapabilityList">
                 <ItemsControl.ItemTemplate>
                     <DataTemplate>
-                        <Border BorderBrush="#EEE" BorderThickness="0,0,0,1" Padding="4,8">
+                        <Border BorderBrush="{DynamicResource Chrome.BorderSubtle}" BorderThickness="0,0,0,1" Padding="4,8">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
@@ -62,12 +62,12 @@
                                             <TextBlock Text="{Binding RiskLabel}" Foreground="White"
                                                        FontSize="10"/>
                                         </Border>
-                                        <Border Style="{StaticResource RiskChip}" Background="#666"
+                                        <Border Style="{StaticResource RiskChip}" Background="{DynamicResource Text.Secondary}"
                                                 Visibility="{Binding AdminVisibility}">
                                             <TextBlock Text="admin consent" Foreground="White"
                                                        FontSize="10"/>
                                         </Border>
-                                        <Border Style="{StaticResource RiskChip}" Background="#1B7F3B"
+                                        <Border Style="{StaticResource RiskChip}" Background="{DynamicResource Status.Good}"
                                                 Visibility="{Binding GrantedVisibility}">
                                             <TextBlock Text="granted" Foreground="White" FontSize="10"/>
                                         </Border>
@@ -76,13 +76,13 @@
                                     <TextBlock Text="{Binding Summary}" TextWrapping="Wrap"
                                                Margin="0,2,0,0"/>
                                     <TextBlock Text="{Binding WithoutText}" TextWrapping="Wrap"
-                                               Foreground="Gray" Margin="0,2,0,0"/>
+                                               Foreground="{DynamicResource Text.Secondary}" Margin="0,2,0,0"/>
                                     <TextBlock Text="{Binding ScopeText}" FontFamily="Consolas"
-                                               FontSize="11" Foreground="#555" Margin="0,2,0,0"
+                                               FontSize="11" Foreground="{DynamicResource Text.Secondary}" Margin="0,2,0,0"
                                                TextWrapping="Wrap"
                                                Visibility="{Binding ScopeVisibility}"/>
                                     <TextBlock Text="{Binding Warning}" TextWrapping="Wrap"
-                                               Foreground="#B00" Margin="0,3,0,0"
+                                               Foreground="{DynamicResource Risk.Destructive}" Margin="0,3,0,0"
                                                Visibility="{Binding WarningVisibility}"/>
                                 </StackPanel>
                             </Grid>
@@ -101,6 +101,6 @@
         </StackPanel>
 
         <TextBlock x:Name="StatusLabel" Grid.Row="4" Margin="0,6,0,0"
-                   Foreground="Gray" TextWrapping="Wrap"/>
+                   Foreground="{DynamicResource Text.Secondary}" TextWrapping="Wrap"/>
     </Grid>
 </Window>

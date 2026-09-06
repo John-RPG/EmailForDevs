@@ -79,9 +79,9 @@ public partial class CapabilitiesWindow : Window
 
         public Brush RiskBrush => Capability.Risk switch
         {
-            CapabilityRisk.Essential => new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x55)),
-            CapabilityRisk.Broad => new SolidColorBrush(Color.FromRgb(0xB8, 0x6E, 0x00)),
-            CapabilityRisk.Dangerous => new SolidColorBrush(Color.FromRgb(0xB0, 0x00, 0x00)),
+            CapabilityRisk.Essential => MainWindow.Themed("Text.Secondary", Brushes.DimGray),
+            CapabilityRisk.Broad => MainWindow.Themed("Risk.Performance", Brushes.DarkOrange),
+            CapabilityRisk.Dangerous => MainWindow.Themed("Risk.Destructive", Brushes.Firebrick),
             _ => Brushes.Transparent,
         };
     }

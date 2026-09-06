@@ -15,7 +15,7 @@
         <!-- One row per setting: label and provenance on the left, the editor
              for whichever kind it is on the right. -->
         <DataTemplate x:Key="SettingRow">
-            <Border BorderBrush="#EEE" BorderThickness="0,0,0,1" Padding="6,7">
+            <Border BorderBrush="{DynamicResource Chrome.BorderSubtle}" BorderThickness="0,0,0,1" Padding="6,7">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" MinWidth="240"/>
@@ -30,19 +30,19 @@
                                     Visibility="{Binding RiskVisibility}">
                                 <TextBlock Text="{Binding RiskLabel}" Foreground="White" FontSize="10"/>
                             </Border>
-                            <Border Style="{StaticResource Chip}" Background="#3A6EA5"
+                            <Border Style="{StaticResource Chip}" Background="{DynamicResource Accent}"
                                     Visibility="{Binding OverriddenVisibility}">
                                 <TextBlock Text="set here" Foreground="White" FontSize="10"/>
                             </Border>
                         </StackPanel>
                         <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
-                                   Foreground="#444" Margin="0,2,0,0"/>
-                        <TextBlock Text="{Binding SourceText}" Foreground="Gray"
+                                   Foreground="{DynamicResource Text.Secondary}" Margin="0,2,0,0"/>
+                        <TextBlock Text="{Binding SourceText}" Foreground="{DynamicResource Text.Secondary}"
                                    FontSize="11" Margin="0,2,0,0"/>
-                        <TextBlock Text="{Binding Warning}" TextWrapping="Wrap" Foreground="#B00"
+                        <TextBlock Text="{Binding Warning}" TextWrapping="Wrap" Foreground="{DynamicResource Risk.Destructive}"
                                    Margin="0,3,0,0" Visibility="{Binding WarningVisibility}"/>
                         <TextBlock Text="{Binding KeyText}" FontFamily="Consolas" FontSize="10"
-                                   Foreground="#888" Margin="0,3,0,0"/>
+                                   Foreground="{DynamicResource Text.Secondary}" Margin="0,3,0,0"/>
                     </StackPanel>
 
                     <!-- Each editor is named after its setting. Generated rows
@@ -102,7 +102,7 @@
             <TextBlock DockPanel.Dock="Top" Text="Applies to" FontWeight="SemiBold"
                        Margin="0,0,0,6"/>
             <TreeView x:Name="ScopeTree" SelectedItemChanged="OnScopeChanged"
-                      BorderBrush="#DDD" BorderThickness="1"
+                      BorderBrush="{DynamicResource Chrome.Border}" BorderThickness="1"
                       ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                 <TreeView.ItemContainerStyle>
                     <Style TargetType="TreeViewItem">
@@ -126,7 +126,7 @@
         <DockPanel Grid.Row="0" Grid.Column="2">
             <StackPanel DockPanel.Dock="Top" Margin="0,0,0,6">
                 <TextBlock x:Name="ScopeHeader" FontWeight="SemiBold" FontSize="14"/>
-                <TextBlock x:Name="ScopeHint" Foreground="Gray" TextWrapping="Wrap"
+                <TextBlock x:Name="ScopeHint" Foreground="{DynamicResource Text.Secondary}" TextWrapping="Wrap"
                            Margin="0,2,0,0"/>
             </StackPanel>
 
@@ -144,8 +144,8 @@
                  across two dialogs is what made the old Accounts window a
                  parallel place to look. -->
             <Border x:Name="ActionsPanel" DockPanel.Dock="Top" Visibility="Collapsed"
-                    BorderBrush="#DDD" BorderThickness="1" Padding="8" Margin="0,0,0,8"
-                    Background="#FAFAFA">
+                    BorderBrush="{DynamicResource Chrome.Border}" BorderThickness="1" Padding="8" Margin="0,0,0,8"
+                    Background="{DynamicResource Chrome.Alt}">
                 <StackPanel>
                     <TextBlock x:Name="ActionsHeader" FontWeight="SemiBold" Margin="0,0,0,6"/>
                     <ItemsControl x:Name="ActionsList">
@@ -162,12 +162,12 @@
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                    <TextBlock x:Name="ActionsDetail" Foreground="Gray" TextWrapping="Wrap"
+                    <TextBlock x:Name="ActionsDetail" Foreground="{DynamicResource Text.Secondary}" TextWrapping="Wrap"
                                Margin="0,4,0,0"/>
                 </StackPanel>
             </Border>
 
-            <ScrollViewer VerticalScrollBarVisibility="Auto" BorderBrush="#DDD"
+            <ScrollViewer VerticalScrollBarVisibility="Auto" BorderBrush="{DynamicResource Chrome.Border}"
                           BorderThickness="1" Padding="6,0,6,6">
                 <ItemsControl x:Name="SettingsList">
                     <ItemsControl.GroupStyle>
@@ -175,7 +175,7 @@
                             <GroupStyle.HeaderTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding Name}" FontWeight="Bold"
-                                               Foreground="#333" FontSize="13"
+                                               Foreground="{DynamicResource Text.Primary}" FontSize="13"
                                                Margin="0,12,0,4" Padding="0,4,0,0"/>
                                 </DataTemplate>
                             </GroupStyle.HeaderTemplate>
@@ -189,7 +189,7 @@
         </DockPanel>
 
         <DockPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Margin="0,8,0,0">
-            <TextBlock x:Name="StatusLabel" VerticalAlignment="Center" Foreground="Gray"
+            <TextBlock x:Name="StatusLabel" VerticalAlignment="Center" Foreground="{DynamicResource Text.Secondary}"
                        TextTrimming="CharacterEllipsis"/>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Content="Close" Padding="14,3" Click="OnClose"/>

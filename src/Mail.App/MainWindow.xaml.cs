@@ -113,13 +113,18 @@ public partial class MainWindow : Window
             LogLevel.Warning => "⚠",
             _ => "✖",
         };
+        /// <summary>
+        /// Resolved from the theme on each read. Black text on the dark theme's
+        /// ground is unreadable, and a brush captured once would not follow a
+        /// theme switch.
+        /// </summary>
         public Brush Brush => Level switch
         {
-            LogLevel.Debug => Brushes.Gray,
-            LogLevel.Verbose => Brushes.Gray,
-            LogLevel.Warning => Brushes.DarkOrange,
-            LogLevel.Error => Brushes.Firebrick,
-            _ => Brushes.Black,
+            LogLevel.Debug => Themed("Text.Secondary", Brushes.Gray),
+            LogLevel.Verbose => Themed("Text.Secondary", Brushes.Gray),
+            LogLevel.Warning => Themed("Risk.Performance", Brushes.DarkOrange),
+            LogLevel.Error => Themed("Risk.Destructive", Brushes.Firebrick),
+            _ => Themed("Text.Primary", Brushes.Black),
         };
     
         /// <summary>
@@ -376,6 +381,19 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Applies the configured theme. Called at startup and after settings
+    /// change, so switching restyles open windows without a restart.
+    /// </summary>
+    void ApplyTheme()
+    {
+        var mode = _settings?.GetString(SettingsCatalog.ThemeMode, SettingTarget.Application)
+            ?? "system";
+        Themes.ThemeManager.Apply(Themes.ThemeManager.Parse(mode));
+        Log(LogLevel.Verbose,
+            $"Theme: {mode}{(mode == "system" ? $" (Windows is {(Themes.ThemeManager.IsDark ? "dark" : "light")})" : "")}.");
+    }
+
     void Log(string line) => Log(LogLevel.Info, line);
 
     void Log(LogLevel level, string line)
@@ -416,6 +434,7 @@ public partial class MainWindow : Window
             _appDb = AppDatabase.Open(Path.Combine(_scratchRoot, "profile", "app.db"), masterKey);
             _settings = new SettingsStore(_appDb);
             _drafts = new DraftStore(_appDb);
+            ApplyTheme();
 
             LoadMailboxHandles(repoRoot);
             LoadFavourites();
@@ -1893,6 +1912,13 @@ public partial class MainWindow : Window
     readonly Dictionary<string, IReadOnlyDictionary<string, MailboxFolderSizes.FolderSize>>
         _folderSizes = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// A themed brush by key. Resolved on each read rather than cached, so a
+    /// theme switch restyles rows that are already built.
+    /// </summary>
+    internal static Brush Themed(string key, Brush fallback) =>
+        Application.Current?.TryFindResource(key) as Brush ?? fallback;
+
     static int FindHeaderEnd(byte[] raw)
     {
         for (var i = 0; i + 1 < raw.Length; i++)
@@ -2294,6 +2320,7 @@ public partial class MainWindow : Window
         // mid-sync to add an unrelated one would throw away its progress, and a
         // new mailbox should not wait for that either.
         Log("Settings changed.");
+        ApplyTheme();
         StartAutoSync();     // the interval may have changed
         StartLiveUpdates();  // and so may the accounts or the live-update setting
         ReconcileMailboxes();

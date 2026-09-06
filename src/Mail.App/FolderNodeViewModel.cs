@@ -110,7 +110,25 @@ public sealed class FolderNodeViewModel : INotifyPropertyChanged
 
     public FontWeight Weight => HasUnread ? FontWeights.Bold : FontWeights.Normal;
 
-    public Brush CountBrush => HasUnread ? Brushes.Black : Brushes.Gray;
+    /// <summary>
+    /// Resolved from the theme on each read: a brush captured once would keep
+    /// the old colour after a theme switch.
+    /// </summary>
+    /// <summary>
+    /// Resolved from the theme on each read: a brush captured once would keep
+    /// the old colour after a theme switch. A selected row uses the primary
+    /// colour, because secondary text cannot reach AA on a selection tint.
+    /// </summary>
+    public Brush CountBrush => HasUnread || IsSelected
+        ? MainWindow.Themed("Text.Primary", Brushes.Black)
+        : MainWindow.Themed("Text.Secondary", Brushes.Gray);
+
+    bool _isSelected;
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set { _isSelected = value; Raise(nameof(IsSelected)); Raise(nameof(CountBrush)); }
+    }
 
     /// <summary>Spells out what the count column is showing, since a bare
     /// "1,203/26,921" is meaningless without context.</summary>

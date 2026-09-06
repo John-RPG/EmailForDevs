@@ -1,0 +1,210 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+        Implicit styles for the controls the app actually uses. Replacing
+        individual colours was not enough: most panels never set a Background at
+        all, so they fall through to WPF's built-in light defaults and there is
+        nothing to override. These give every surface a themed brush.
+
+        Styles are keyless (implicit) so they apply without touching each
+        control, and every brush is a DynamicResource so switching theme
+        restyles live rather than needing a restart.
+    -->
+
+    <Style TargetType="Window">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="TextBlock">
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="Label">
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="CheckBox">
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="TextBox">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+        <Setter Property="CaretBrush" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="SelectionBrush" Value="{DynamicResource Accent}"/>
+    </Style>
+
+    <Style TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Raised}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <!-- Retemplated because the stock chrome paints its own
+                         light gradient regardless of Background. -->
+                    <Border x:Name="Chrome" CornerRadius="2"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          Margin="{TemplateBinding Padding}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Chrome" Property="Background"
+                                    Value="{DynamicResource Selection.Background}"/>
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Foreground" Value="{DynamicResource Text.Secondary}"/>
+                            <Setter TargetName="Chrome" Property="Opacity" Value="0.6"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="ComboBox">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Raised}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+    </Style>
+
+    <Style TargetType="ListView">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+    </Style>
+
+    <Style TargetType="ListViewItem">
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Style.Triggers>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{DynamicResource Selection.Background}"/>
+                <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="TreeView">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+    </Style>
+
+    <Style TargetType="TreeViewItem">
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="DataGrid">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+        <Setter Property="RowBackground" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="AlternatingRowBackground" Value="{DynamicResource Chrome.Alt}"/>
+        <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource Chrome.BorderSubtle}"/>
+        <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource Chrome.BorderSubtle}"/>
+    </Style>
+
+    <Style TargetType="DataGridRow">
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Style.Triggers>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{DynamicResource Selection.Background}"/>
+                <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="DataGridColumnHeader">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+        <Setter Property="BorderThickness" Value="0,0,1,1"/>
+        <Setter Property="Padding" Value="6,3"/>
+    </Style>
+
+    <Style TargetType="GridViewColumnHeader">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+    </Style>
+
+    <Style TargetType="TabControl">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+    </Style>
+
+    <Style TargetType="TabItem">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="TabItem">
+                    <Border x:Name="Chrome" Margin="0,0,2,0" CornerRadius="2,2,0,0"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="1,1,1,0">
+                        <ContentPresenter ContentSource="Header" Margin="8,3"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="Chrome" Property="Background"
+                                    Value="{DynamicResource Chrome.Background}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style TargetType="StatusBar">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="Menu">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="ContextMenu">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Raised}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+    </Style>
+
+    <Style TargetType="MenuItem">
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+    </Style>
+
+    <Style TargetType="GridSplitter">
+        <Setter Property="Background" Value="{DynamicResource Chrome.BorderSubtle}"/>
+    </Style>
+
+    <Style TargetType="ProgressBar">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Raised}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Status.Good}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+    </Style>
+
+    <Style TargetType="ScrollViewer">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+    </Style>
+
+    <Style TargetType="ItemsControl">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+    </Style>
+
+    <Style TargetType="Separator">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Border}"/>
+    </Style>
+
+</ResourceDictionary>

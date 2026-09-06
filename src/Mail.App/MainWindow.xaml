@@ -282,12 +282,16 @@
                         <DataGridTextColumn x:Name="ColFromName" Header="From Name" Binding="{Binding FromName}" Width="Auto" Visibility="Collapsed" />
                         <DataGridTextColumn x:Name="ColFromAddress" Header="From Address" Binding="{Binding FromAddress}" Width="Auto" Visibility="Collapsed" />
                         <DataGridTextColumn x:Name="ColTo" Header="To" Binding="{Binding To}" Width="Auto" />
-                        <DataGridTextColumn x:Name="ColReceived" Header="Received" Binding="{Binding Received}" Width="Auto" SortMemberPath="ReceivedValue" />
+                        <DataGridTextColumn x:Name="ColReceived" Header="Received" Binding="{Binding Received}" Width="Auto" SortMemberPath="ReceivedValue" FontFamily="Consolas"/>
                         <DataGridTextColumn x:Name="ColSize" Header="KB" Binding="{Binding SizeKb}" Width="Auto" SortMemberPath="SizeVal">
                             <DataGridTextColumn.ElementStyle>
                                 <Style TargetType="TextBlock">
-                                    <Setter Property="TextAlignment" Value="Right" />
+                                    <Setter Property="TextAlignment" Value="Right"/>
                                     <Setter Property="Margin" Value="0,0,6,0" />
+                                    <!-- Monospace digits so figures line up
+                                         column-wise and can be compared at a
+                                         glance; proportional digits do not. -->
+                                    <Setter Property="FontFamily" Value="Consolas"/>
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>

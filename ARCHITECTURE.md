@@ -247,6 +247,51 @@ Periodic checks remain as a fallback, configurable and defaulting to two
 minutes, for accounts where streaming is unavailable or the permission is not
 granted. Returning to the window also triggers a check.
 
+## Theming and layout
+
+Panels are AvalonDock anchorables (Dirkster.AvalonDock 5.0.0, the maintained
+fork) — the agreed exception to the low-dependency rule. Folders, the message
+list, the reading pane and the activity log each float, dock to any edge, or pin
+away into a strip. AvalonDock's own chrome is light regardless of the app
+palette, so its surfaces are pointed at the theme brushes, including floating
+windows, which are separate top-level windows and would otherwise ignore the
+theme entirely.
+
+Two layout constraints worth remembering: `LayoutRoot` takes a single child, so
+everything nests inside one panel; and `DockHeight` alone lets a pane collapse to
+its title bar, so panes carry `DockMinHeight`.
+
+### Colours are measured, not chosen
+
+The dark palette is One Dark; light is a neutral grey-on-white. Every
+foreground/background pair is checked against WCAG AA (4.5:1) by tests in
+`PaletteTests`, and that has caught real defects three times:
+
+- One Dark's own red measures 4.38:1 on its own background — under AA. A
+  well-regarded palette still fails when measured.
+- Secondary text on a selected row measured 3.16:1 in dark: readable until you
+  click it. Selected rows now use the primary colour, since secondary cannot
+  reach AA on a selection tint without becoming indistinguishable from primary.
+- A "raised" surface set to pure white gave buttons no edge against a white
+  background at all.
+
+Dark body text avoids pure white deliberately — it haloes against a dark ground,
+which is why the dark theme is not an inversion of the light one.
+
+Brushes resolve through `DynamicResource`, and code-behind reads them per access
+rather than caching, so a theme switch restyles open windows rather than
+requiring a restart. Implicit control styles are what make this work at all:
+most WPF panels never set a `Background`, so replacing individual colours left
+the app entirely light until every control had a themed style.
+
+### Density
+
+Dense on purpose — a mail client is a data table. Spacing sits on a 4px grid,
+rows are 22px, numeric columns use a monospace font so figures align
+column-wise, and hierarchy comes from weight and colour rather than whitespace:
+column headers recede to secondary, unread stays bold, and the selected row
+carries a coloured left edge as well as a fill.
+
 ## UI testing
 
 Screenshots show layout; they do not show what a control *is*. The accessibility

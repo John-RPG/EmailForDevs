@@ -30,6 +30,8 @@
     </Style>
 
     <Style TargetType="TextBox">
+        <Setter Property="Padding" Value="6,3"/>
+        <Setter Property="MinHeight" Value="26"/>
         <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
         <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
         <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
@@ -42,6 +44,11 @@
         <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
         <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
         <Setter Property="BorderThickness" Value="1"/>
+        <!-- Spacing on a 4px grid throughout, so controls line up without
+             each one carrying its own hand-tuned margin. -->
+        <Setter Property="Padding" Value="12,4"/>
+        <Setter Property="Margin" Value="0,0,4,0"/>
+        <Setter Property="MinHeight" Value="26"/>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -70,6 +77,8 @@
     </Style>
 
     <Style TargetType="ComboBox">
+        <Setter Property="Padding" Value="6,3"/>
+        <Setter Property="MinHeight" Value="26"/>
         <Setter Property="Background" Value="{DynamicResource Chrome.Raised}"/>
         <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
         <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
@@ -99,21 +108,16 @@
 
     <Style TargetType="TreeViewItem">
         <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="Padding" Value="2,1"/>
     </Style>
 
-    <Style TargetType="DataGrid">
-        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
+    <Style TargetType="ListBoxItem">
         <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
-        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
-        <Setter Property="RowBackground" Value="{DynamicResource Chrome.Background}"/>
-        <Setter Property="AlternatingRowBackground" Value="{DynamicResource Chrome.Alt}"/>
-        <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource Chrome.BorderSubtle}"/>
-        <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource Chrome.BorderSubtle}"/>
-    </Style>
-
-    <Style TargetType="DataGridRow">
-        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="Padding" Value="4,1"/>
         <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource Row.Hover}"/>
+            </Trigger>
             <Trigger Property="IsSelected" Value="True">
                 <Setter Property="Background" Value="{DynamicResource Selection.Background}"/>
                 <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
@@ -121,12 +125,61 @@
         </Style.Triggers>
     </Style>
 
-    <Style TargetType="DataGridColumnHeader">
-        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+    <Style TargetType="DataGrid">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Background}"/>
         <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
         <Setter Property="BorderBrush" Value="{DynamicResource Chrome.Border}"/>
+        <Setter Property="RowBackground" Value="{DynamicResource Chrome.Background}"/>
+        <Setter Property="AlternatingRowBackground" Value="{DynamicResource Row.Stripe}"/>
+        <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource Chrome.BorderSubtle}"/>
+        <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource Chrome.BorderSubtle}"/>
+    </Style>
+
+    <Style TargetType="DataGridRow">
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <!-- 22px: dense enough to see a screenful of mail, tall enough that
+             rows do not run together. -->
+        <Setter Property="MinHeight" Value="22"/>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource Row.Hover}"/>
+            </Trigger>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{DynamicResource Selection.Background}"/>
+                <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+                <!-- A left edge as well as a fill: faster to spot, and it still
+                     reads when the fill is too subtle to notice. -->
+                <Setter Property="BorderBrush" Value="{DynamicResource Selection.Edge}"/>
+                <Setter Property="BorderThickness" Value="3,0,0,0"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="DataGridCell">
+        <Setter Property="Padding" Value="8,2"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Style.Triggers>
+            <!-- Stock DataGrid paints selected cells with the system highlight,
+                 which ignores the theme entirely. -->
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="Transparent"/>
+                <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="DataGridColumnHeader">
+        <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
+        <!-- Headers label the data; they should not compete with it. -->
+        <Setter Property="Foreground" Value="{DynamicResource Text.Secondary}"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource Chrome.BorderSubtle}"/>
         <Setter Property="BorderThickness" Value="0,0,1,1"/>
-        <Setter Property="Padding" Value="6,3"/>
+        <Setter Property="Padding" Value="8,5"/>
+        <Setter Property="MinHeight" Value="26"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
     </Style>
 
     <Style TargetType="GridViewColumnHeader">

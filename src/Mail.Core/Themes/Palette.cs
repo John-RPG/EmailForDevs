@@ -56,9 +56,20 @@ public static class Palette
     public static readonly IReadOnlyList<Entry> Entries =
     [
         // ---- surfaces ------------------------------------------------------
+        // Three distinct levels rather than three near-identical greys: content
+        // sits on Background, chrome recedes to Alt, and interactive things sit
+        // proud on Raised. A flat interface reads as unfinished because nothing
+        // tells the eye what is content and what is furniture.
         new("Chrome.Background",     "#FFFFFF", "#282C34", ColourRole.Background),
-        new("Chrome.Alt",            "#FAFAFA", "#21252B", ColourRole.Background),
-        new("Chrome.Raised",         "#F4F4F4", "#2C313A", ColourRole.Background),
+        new("Chrome.Alt",            "#F3F4F6", "#21252B", ColourRole.Background),
+        // Not pure white: a raised surface identical to the background gives a
+        // button no edge at all, which is what the contrast test caught.
+        new("Chrome.Raised",         "#F9FAFB", "#323842", ColourRole.Background),
+
+        // Row striping, deliberately subtle: enough to follow a row across a
+        // wide grid, not enough to read as a pattern.
+        new("Row.Stripe",            "#FAFAFB", "#2C313A", ColourRole.Background),
+        new("Row.Hover",             "#EFF3F8", "#333A45", ColourRole.Background),
 
         // ---- text ----------------------------------------------------------
         // Light: #1A1A1A on white is 17.4:1. Dark: #ABB2BF on #282C34 is 8.4:1,
@@ -75,6 +86,9 @@ public static class Palette
         // ---- selection and accent -----------------------------------------
         new("Accent",                "#0067C0", "#528BFF", ColourRole.AccentSurface),
         new("Selection.Background",  "#CCE4F7", "#3E4451", ColourRole.Background),
+        // A left edge on the selected row, which reads faster than a fill alone
+        // and survives being printed or screenshotted in greyscale.
+        new("Selection.Edge",        "#0067C0", "#528BFF", ColourRole.AccentSurface),
 
         // ---- risk and status ------------------------------------------------
         // Reds are darkened for light mode and lightened for dark so both stay

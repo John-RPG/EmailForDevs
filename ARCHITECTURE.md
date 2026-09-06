@@ -202,6 +202,61 @@ before it can be added, and that call is the same permission check Exchange
 applies to the user in OWA — so the app can never read mail its user could not
 read themselves. Typed-address entry works with no discovery scopes at all.
 
+## UI testing
+
+Screenshots show layout; they do not show what a control *is*. The accessibility
+tree does, and it is the same tree screen readers use — so a defect found there
+is a defect for real users, not just for automation.
+
+Driven with the `uia` CLI from the sibling UIAutomation project, using its
+**published** build (`releases\current`), never `bin\Debug`: that is another
+session's working copy, rebuilt constantly, and holding its assemblies breaks
+their build. A published binary reports a version stamp; a working copy says
+`uia dev+local`.
+
+    uia inputs Settings --depth 14 --json    every input element with its value
+    uia windows --json                       owner / isOwned / bounds per window
+
+`uia inputs` produces a diffable snapshot of every control and its live value,
+which catches what a screenshot cannot: a control that lost its name, a default
+that quietly changed, a setting missing from a generated list.
+
+Three faults found this way, none visible in a screenshot:
+
+- Generated settings rows presented as `(unnamed)`, because an `ItemsControl`
+  gives its children no `AutomationProperties` unless told to. Unusable for
+  automation and mute to a screen reader; they now carry the setting's name, its
+  key as AutomationId, and its description as help text.
+- Message rows exposed a record's generated `ToString()` as their accessible
+  name, leaking the object graph including the mailbox handle.
+- Setting a value produced `"ser6"` from `"6"` — `UpdateSourceTrigger=PropertyChanged`
+  wrote back mid-edit and interleaved with the incoming text. A fast typist hits
+  this too; automation merely found it first.
+
+### Owned dialogs
+
+Dialogs shown with `ShowDialog()` and an Owner are **not** children of the
+desktop in the UIA tree, so `RootElement.FindAll(TreeScope.Children, …)` misses
+them: a dialog plainly on screen looks like it never opened. Enumerate with
+`EnumWindows` + `AutomationElement.FromHandle` instead, which also carries the
+ownership relationship UIA does not expose.
+
+Reading "not found" as "did not open" caused a button to be invoked twice here,
+stacking two dialogs — worth knowing before trusting a negative result.
+
+### Other traps
+
+- `InvokePattern.Invoke()` on a button opening a modal dialog returns before the
+  window is enumerable. Poll; do not assume.
+- Coordinate clicking is unreliable across multiple monitors — coordinates read
+  off a screenshot were out by a whole monitor origin. Use element invocation or
+  the `bounds` field.
+- `SetForegroundWindow` is blocked for background processes, so anything
+  requiring focus first fails intermittently.
+- Screenshots that must work regardless of occlusion use `PrintWindow` with
+  `PW_RENDERFULLCONTENT` against a window handle: no focus stealing, and it
+  captures a fully covered window correctly.
+
 ## Threading
 
 Conversation keys are computed at ingest from References/In-Reply-To

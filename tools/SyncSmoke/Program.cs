@@ -397,6 +397,90 @@ if (args.Length > 0 && args[0].Equals("htmlprobe", StringComparison.OrdinalIgnor
     return;
 }
 
+if (args.Length > 0 && args[0].Equals("sigprobe", StringComparison.OrdinalIgnoreCase))
+{
+    // Graph has no signature API. EWS GetUserConfiguration used to hold OWA
+    // signatures, but roaming signatures moved them elsewhere. Check what is
+    // actually reachable with the Exchange token we hold, rather than assuming
+    // either way.
+    var sigAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    using var sigHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+    var who = args.Length > 1 ? args[1] : "user@example.com";
+
+    var acct = (await sigAuth.GetAccountsAsync())
+        .FirstOrDefault(a => a.Username.Equals(who, StringComparison.OrdinalIgnoreCase));
+    if (acct is null) { Console.WriteLine($"{who} not signed in"); return; }
+    var tok = await sigAuth.AcquireSilentAsync(acct, GraphAuthenticator.ExchangeScopes);
+    if (tok is null) { Console.WriteLine("no EWS token"); return; }
+
+    const string ews = "https://outlook.office365.com/EWS/Exchange.asmx";
+    async Task Try(string label, string configName)
+    {
+        var envelope = $"""
+            <?xml version="1.0" encoding="utf-8"?>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+                           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+              <soap:Header><t:RequestServerVersion Version="Exchange2013"/></soap:Header>
+              <soap:Body>
+                <m:GetUserConfiguration>
+                  <m:UserConfigurationName Name="{configName}">
+                    <t:DistinguishedFolderId Id="root"/>
+                  </m:UserConfigurationName>
+                  <m:UserConfigurationProperties>All</m:UserConfigurationProperties>
+                </m:GetUserConfiguration>
+              </soap:Body>
+            </soap:Envelope>
+            """;
+        using var req = new HttpRequestMessage(HttpMethod.Post, ews);
+        req.Headers.Authorization = new("Bearer", tok.AccessToken);
+        req.Content = new StringContent(envelope, System.Text.Encoding.UTF8, "text/xml");
+        var resp = await sigHttp.SendAsync(req);
+        var body = await resp.Content.ReadAsStringAsync();
+        var code = System.Text.RegularExpressions.Regex.Match(body, @"<m:ResponseCode>(.*?)</m:ResponseCode>");
+        var hasData = body.Contains("<t:XmlData>") || body.Contains("<t:BinaryData>");
+        Console.WriteLine($"  {label,-34} HTTP {(int)resp.StatusCode}  {(code.Success ? code.Groups[1].Value : "?")}" +
+                          (hasData ? "  [has data]" : ""));
+        if (hasData)
+        {
+            // Show what the config actually holds — a signature would appear as
+            // HTML or as a named dictionary entry.
+            foreach (System.Text.RegularExpressions.Match entry in
+                     System.Text.RegularExpressions.Regex.Matches(body,
+                         @"<t:DictionaryEntry>.*?<t:Value>(.*?)</t:Value>",
+                         System.Text.RegularExpressions.RegexOptions.Singleline))
+            {
+                var v = entry.Groups[1].Value;
+                if (v.Contains("signature", StringComparison.OrdinalIgnoreCase) ||
+                    v.Contains("<", StringComparison.Ordinal))
+                    Console.WriteLine($"      {v[..Math.Min(120, v.Length)]}");
+            }
+            var keys = System.Text.RegularExpressions.Regex.Matches(body, @"<t:String>(\w*[Ss]ignature\w*)</t:String>");
+            foreach (System.Text.RegularExpressions.Match k in keys)
+                Console.WriteLine($"      key: {k.Groups[1].Value}");
+            if (keys.Count == 0) Console.WriteLine("      (no signature-named keys)");
+        }
+    }
+
+    Console.WriteLine($"=== {who} ===");
+    await Try("OWA.UserOptions", "OWA.UserOptions");
+    await Try("Signatures", "Signatures");
+    await Try("Roaming signatures", "OWA.AutoSignature");
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("setsig", StringComparison.OrdinalIgnoreCase))
+{
+    var store = new SettingsStore(appDb);
+    store.Set(SettingsCatalog.SignatureSource.Key, SettingTarget.Application, "local");
+    var sigText = "John Hadlow" + "\n" + "eeeMail - a mail client for people who read headers";
+    store.Set(SettingsCatalog.SignatureText.Key, SettingTarget.Application, sigText);
+    Console.WriteLine("signature configured:");
+    Console.WriteLine($"  source: {store.GetString(SettingsCatalog.SignatureSource, SettingTarget.Application)}");
+    Console.WriteLine($"  text  : {store.GetString(SettingsCatalog.SignatureText, SettingTarget.Application).Replace("\n", " / ")}");
+    return;
+}
+
 if (args.Length > 0 && args[0].Equals("grantcap", StringComparison.OrdinalIgnoreCase))
 {
     // Records a capability as granted, but only after confirming the scopes are

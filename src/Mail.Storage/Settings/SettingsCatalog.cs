@@ -289,20 +289,21 @@ public static class SettingsCatalog
 
     public static readonly SettingDefinition SignatureSource = new(
         "compose.signature_source",
-        "Signature source",
-        "Where the signature comes from. Outlook stores signatures in the mailbox " +
-        "(\"roaming\" signatures), so they follow the account between machines; " +
-        "the local option keeps one specific to this install.",
-        SettingKind.Enum, "roaming if available",
+        "Signature",
+        "Whether to append a signature to new messages. Stored locally: " +
+        "Microsoft exposes no API for Outlook's roaming signatures — Graph has " +
+        "none, and the EWS user-configuration route that once held them returns " +
+        "empty now that roaming signatures replaced it.",
+        SettingKind.Enum, "none",
         [Account, Application],
-        Choices: ["roaming if available", "roaming only", "local only", "none"],
+        Choices: ["none", "local"],
         Category: "Composing");
 
     public static readonly SettingDefinition SignatureText = new(
         "compose.signature_local",
-        "Local signature",
-        "Used when the source is local, or when roaming is unavailable. Supports " +
-        "plain text; HTML is used as-is when composing in HTML.",
+        "Signature text",
+        "Appended to new messages. Plain text is used as written; when composing " +
+        "in HTML it is wrapped, so line breaks survive.",
         SettingKind.String, "",
         [Account, Application],
         Category: "Composing");

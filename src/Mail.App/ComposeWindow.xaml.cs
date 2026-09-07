@@ -37,6 +37,12 @@ public partial class ComposeWindow : Window
     /// <summary>Persists unsent work. Null when the caller wants no saving.</summary>
     readonly DraftStore? _drafts;
 
+    /// <summary>
+    /// Supplies the signature for a sending account, given whether the message
+    /// is a reply. Owned by the shell, which holds the settings store.
+    /// </summary>
+    readonly Func<string, bool, string?>? _signature;
+
     /// <summary>Row this window owns, 0 until first saved. Kept so autosave
     /// updates one row rather than accumulating a copy per keystroke burst.</summary>
     long _draftId;
@@ -58,13 +64,15 @@ public partial class ComposeWindow : Window
         Func<string, MimeMessage, Task> send,
         Draft? seed = null,
         DraftStore? drafts = null,
-        long draftId = 0)
+        long draftId = 0,
+        Func<string, bool, string?>? signature = null)
     {
         InitializeComponent();
         _send = send;
         _seed = seed;
         _drafts = drafts;
         _draftId = draftId;
+        _signature = signature;
         AttachmentBox.ItemsSource = _attachments;
 
         // Save periodically as well as on close: a crash or a power cut should
@@ -98,6 +106,9 @@ public partial class ComposeWindow : Window
         {
             if (_isRich)
                 await ShowRichEditorAsync(seed?.HtmlBody ?? "");
+            // After the body is populated: appending first would be overwritten
+            // by the seed, and a resumed draft already contains its signature.
+            if (draftId == 0) await InsertSignatureAsync(seed is not null);
             // Only start autosaving once the editor exists, or the first tick
             // would read a body that has not been populated yet.
             if (_drafts is not null) _autosave.Start();
@@ -321,6 +332,36 @@ public partial class ComposeWindow : Window
     /// and closed, or a reply whose quoted text was never added to — should not
     /// leave a draft behind to clean up later.
     /// </summary>
+    /// <summary>
+    /// Appends the signature for the sending account, if one is configured and
+    /// applies to this kind of message. Separated from the body by the standard
+    /// "-- " marker, which clients use to trim signatures when quoting.
+    /// </summary>
+    async Task InsertSignatureAsync(bool isReply)
+    {
+        if (_signature is null) return;
+        var from = FromBox.SelectedItem as string ?? "";
+        var text = _signature(from, isReply);
+        if (string.IsNullOrWhiteSpace(text)) return;
+
+        if (_isRich)
+        {
+            var html = await ReadRichBodyAsync();
+            var block = "<br><br><div>--&nbsp;<br>" +
+                        System.Net.WebUtility.HtmlEncode(text).Replace("\n", "<br>") +
+                        "</div>";
+            var json = JsonSerializer.Serialize(html + block);
+            await RichEditor.CoreWebView2.ExecuteScriptAsync($"window.setBody({json});");
+            await RichEditor.CoreWebView2.ExecuteScriptAsync("window.focusBody();");
+        }
+        else
+        {
+            BodyBox.Text += $"{Environment.NewLine}{Environment.NewLine}-- {Environment.NewLine}{text}";
+            // Leave the caret at the top so the user types above the signature.
+            BodyBox.CaretIndex = 0;
+        }
+    }
+
     async Task<bool> HasContentAsync()
     {
         if (ToBox.Text.Trim().Length > 0 || CcBox.Text.Trim().Length > 0 ||

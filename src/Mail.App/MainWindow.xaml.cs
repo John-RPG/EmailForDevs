@@ -2433,7 +2433,7 @@ public partial class MainWindow : Window
             return;
         }
         var accounts = _mailboxes.Select(m => m.Upn).ToList();
-        var window = new ComposeWindow(accounts, SendAsync, seed, _drafts, draftId)
+        var window = new ComposeWindow(accounts, SendAsync, seed, _drafts, draftId, SignatureFor)
         {
             Owner = this,
         };
@@ -2517,6 +2517,28 @@ public partial class MainWindow : Window
         foreach (var draft in _drafts.List()) _drafts.Delete(draft.Id);
         Log($"Discarded {count:N0} draft(s).");
         UpdateDraftsButton();
+    }
+
+    /// <summary>
+    /// The signature for a sending account, or null when none applies. Replies
+    /// are excluded by default: appending a full signature to every message in
+    /// a thread is what produces the stacked-signature mess at the bottom of
+    /// long exchanges.
+    /// </summary>
+    string? SignatureFor(string fromAddress, bool isReply)
+    {
+        if (_settings is null || _appDb is null) return null;
+        var mailbox = _mailboxes.FirstOrDefault(m =>
+            string.Equals(m.Upn, fromAddress, StringComparison.OrdinalIgnoreCase));
+        SettingTarget[] chain = mailbox is null
+            ? [SettingTarget.Application]
+            : [SettingTarget.Account(mailbox.AccountId), SettingTarget.Application];
+
+        if (_settings.GetString(SettingsCatalog.SignatureSource, chain) != "local") return null;
+        if (isReply && !_settings.GetBool(SettingsCatalog.SignatureOnReply, chain)) return null;
+
+        var text = _settings.GetString(SettingsCatalog.SignatureText, chain);
+        return string.IsNullOrWhiteSpace(text) ? null : text;
     }
 
     /// <summary>

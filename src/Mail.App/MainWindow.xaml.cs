@@ -71,6 +71,17 @@ public partial class MainWindow : Window
 
     sealed record FolderNode(MailboxHandle Mailbox, long FolderId, string Name);
 
+    /// <summary>The folder the list is showing, for settings that resolve per folder.</summary>
+    FolderNode? _openFolder;
+
+    /// <summary>
+    /// Where a column change made through the UI is written. The application, so
+    /// that dragging a header is not silently a per-folder override; a developer
+    /// wanting narrower scope sets it in the settings tree, and that override
+    /// still wins when it is read back.
+    /// </summary>
+    static readonly SettingTarget _columnScope = SettingTarget.Application;
+
     public sealed record MessageRow(
         object Mailbox, long Id, string? ServerId, string Status, string From, string FromName,
         string FromAddress, string To, string Received, string SizeKb, double SizeVal,
@@ -196,6 +207,8 @@ public partial class MainWindow : Window
         Loaded += (_, _) =>
         {
             OpenProfile();
+            ApplyColumnLayout(null);
+            ApplyRowDensity(null);
             BuildColumnsMenu();
             UpdateDraftsButton();
             RestoreLayout();
@@ -717,7 +730,7 @@ public partial class MainWindow : Window
         {
             var item = new MenuItem
             {
-                Header = column.Header,
+                Header = ColumnLabel(column),
                 IsCheckable = true,
                 IsChecked = column.Visibility == Visibility.Visible,
                 StaysOpenOnClick = true,
@@ -726,9 +739,137 @@ public partial class MainWindow : Window
             {
                 column.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
                 AutoSizeColumns();
+                SaveColumnLayout();
             };
             ColumnsMenu.Items.Add(item);
         }
+    }
+
+    /// <summary>
+    /// Menu text for a column. The status column's header is deliberately blank
+    /// — it holds only glyphs — so it would otherwise be an unclickable empty
+    /// menu row, and an unnamed one to a screen reader.
+    /// </summary>
+    static string ColumnLabel(DataGridColumn column) =>
+        column.Header as string is { Length: > 0 } header ? header : "Status";
+
+    // ---- column layout -------------------------------------------------------
+
+    /// <summary>
+    /// The setting keys for each column, in the order the XAML declares them.
+    /// Keyed by name rather than index so reordering the XAML cannot silently
+    /// repoint a saved layout at the wrong column.
+    /// </summary>
+    Dictionary<string, DataGridColumn> ColumnsByKey() => new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["status"] = ColStatus,
+        ["from"] = ColFrom,
+        ["fromname"] = ColFromName,
+        ["fromaddress"] = ColFromAddress,
+        ["to"] = ColTo,
+        ["received"] = ColReceived,
+        ["size"] = ColSize,
+        ["subject"] = ColSubject,
+    };
+
+    /// <summary>
+    /// Applies <c>display.message_columns</c>: the listed columns become visible
+    /// in the order given, and every column left out is hidden. An unrecognised
+    /// key is skipped rather than treated as fatal — the setting is free text a
+    /// developer edits by hand, and one typo should not blank the list.
+    /// </summary>
+    void ApplyColumnLayout(FolderNode? node)
+    {
+        if (_settings is null) return;
+        var chain = node is null
+            ? [SettingTarget.Application]
+            : ChainFor(node.Mailbox, node.FolderId);
+        var spec = _settings.GetString(SettingsCatalog.MessageColumns, chain);
+        if (string.IsNullOrWhiteSpace(spec)) return;
+
+        var byKey = ColumnsByKey();
+        var wanted = spec.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var seen = new HashSet<DataGridColumn>();
+        var index = 0;
+        foreach (var key in wanted)
+        {
+            if (!byKey.TryGetValue(key, out var column))
+            {
+                Log(LogLevel.Warning, $"Unknown column '{key}' in {SettingsCatalog.MessageColumns.Key}.");
+                continue;
+            }
+            if (!seen.Add(column)) continue;
+            column.Visibility = Visibility.Visible;
+            column.DisplayIndex = index++;
+        }
+
+        // Anything unlisted is hidden. DisplayIndex must stay a permutation, so
+        // the hidden ones keep positions after the visible run rather than being
+        // left pointing wherever they previously sat.
+        foreach (var column in MessageGrid.Columns)
+            if (!seen.Contains(column))
+            {
+                column.Visibility = Visibility.Collapsed;
+                column.DisplayIndex = index++;
+            }
+
+        BuildColumnsMenu();
+        AutoSizeColumns();
+    }
+
+    /// <summary>
+    /// Writes the current visible columns, in display order, back to the setting
+    /// so a change made through the menu or by dragging a header survives a
+    /// restart. Saved at whatever scope the folder in view resolves to — the
+    /// application, unless the user has overridden it further down.
+    /// </summary>
+    void SaveColumnLayout()
+    {
+        if (_settings is null) return;
+        var byColumn = ColumnsByKey().ToDictionary(p => p.Value, p => p.Key);
+        var keys = MessageGrid.Columns
+            .Where(c => c.Visibility == Visibility.Visible)
+            .OrderBy(c => c.DisplayIndex)
+            .Select(c => byColumn.TryGetValue(c, out var key) ? key : null)
+            .Where(k => k is not null);
+        _settings.Set(SettingsCatalog.MessageColumns.Key, _columnScope, string.Join(",", keys));
+    }
+
+    /// <summary>
+    /// Applies <c>display.row_density</c>. Two- and three-line rows wrap the
+    /// subject rather than clipping it, which is the point of asking for them,
+    /// so the height is a minimum and the subject cell is allowed to grow.
+    /// </summary>
+    void ApplyRowDensity(FolderNode? node)
+    {
+        if (_settings is null) return;
+        var chain = node is null
+            ? [SettingTarget.Application]
+            : ChainFor(node.Mailbox, node.FolderId);
+        var density = _settings.GetString(SettingsCatalog.RowDensity, chain);
+        var lines = density switch { "three-line" => 3, "two-line" => 2, _ => 1 };
+
+        // Derived from the rendered font rather than a fixed pixel count, so the
+        // rows still fit their text at a larger system font size.
+        var lineHeight = Math.Ceiling(MessageGrid.FontSize * 1.4);
+        MessageGrid.RowHeight = double.NaN;                  // let content size it
+        MessageGrid.MinRowHeight = lines * lineHeight + 4;   // padding
+
+        var wrap = lines > 1;
+        ColSubject.ElementStyle = wrap ? _wrappedCell : null;
+        if (ColSubject.Width.IsStar || wrap) return;
+        AutoSizeColumns();
+    }
+
+    /// <summary>Subject cell for multi-line rows: wraps instead of clipping.</summary>
+    static readonly Style _wrappedCell = BuildWrappedCellStyle();
+
+    static Style BuildWrappedCellStyle()
+    {
+        var style = new Style(typeof(TextBlock));
+        style.Setters.Add(new Setter(TextBlock.TextWrappingProperty, TextWrapping.Wrap));
+        style.Setters.Add(new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Top));
+        return style;
     }
 
     // ---- folder tree ---------------------------------------------------------
@@ -1367,6 +1508,12 @@ public partial class MainWindow : Window
 
     void LoadFolder(FolderNode node)
     {
+        // Both resolve per folder, so they are applied before the fill rather
+        // than once at startup: moving between folders can change either.
+        _openFolder = node;
+        ApplyColumnLayout(node);
+        ApplyRowDensity(node);
+
         using var cmd = node.Mailbox.Db.CreateCommand();
         cmd.CommandText = RowSelect + " WHERE m.folder_id = @f ORDER BY m.received_at DESC LIMIT 5000;";
         cmd.Parameters.AddWithValue("@f", node.FolderId);
@@ -2652,6 +2799,8 @@ public partial class MainWindow : Window
         // new mailbox should not wait for that either.
         Log("Settings changed.");
         ApplyTheme();
+        ApplyColumnLayout(_openFolder);
+        ApplyRowDensity(_openFolder);
         StartAutoSync();     // the interval may have changed
         StartLiveUpdates();  // and so may the accounts or the live-update setting
         ReconcileMailboxes();

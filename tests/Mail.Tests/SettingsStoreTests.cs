@@ -207,6 +207,33 @@ public sealed class SettingsStoreTests : IDisposable
     }
 
     [Fact]
+    public void Default_message_columns_name_only_real_columns()
+    {
+        // The shell hides any column the setting leaves out, so a default that
+        // names a key the grid does not have — or omits one it ships visible —
+        // silently changes the list the first time the setting is applied. The
+        // keys are duplicated here rather than shared because the grid lives in
+        // a WPF assembly this project cannot reference; the point of the test is
+        // that the two lists are checked against each other at all.
+        string[] known =
+        [
+            "status", "from", "fromname", "fromaddress",
+            "to", "received", "size", "subject",
+        ];
+
+        var spec = SettingsCatalog.MessageColumns.Default
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.All(spec, key => Assert.Contains(key, known));
+        Assert.Equal(spec.Length, spec.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+
+        // The description is what tells a developer what they may type, so it
+        // has to list every key the shell actually accepts.
+        foreach (var key in known)
+            Assert.Contains(key, SettingsCatalog.MessageColumns.Description);
+    }
+
+    [Fact]
     public void Date_formats_are_validated_as_format_strings()
     {
         // A bad format throws at render time, a long way from where it was set.

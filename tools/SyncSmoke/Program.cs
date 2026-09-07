@@ -353,6 +353,28 @@ if (args.Length > 0 && args[0].Equals("theme", StringComparison.OrdinalIgnoreCas
     return;
 }
 
+if (args.Length > 0 && args[0].Equals("set", StringComparison.OrdinalIgnoreCase))
+{
+    // set <key> [value] — application scope. Reads back when no value is given.
+    // Generic so verifying a new setting does not need a new command each time.
+    if (args.Length < 2) { Console.WriteLine("usage: set <key> [value]"); return; }
+    var store = new SettingsStore(appDb);
+    var def = SettingsCatalog.All.FirstOrDefault(d => d.Key.Equals(args[1], StringComparison.OrdinalIgnoreCase));
+    if (def is null)
+    {
+        Console.WriteLine($"unknown key '{args[1]}'. Known keys:");
+        foreach (var d in SettingsCatalog.All.OrderBy(d => d.Key)) Console.WriteLine($"  {d.Key}");
+        return;
+    }
+    if (args.Length > 2)
+    {
+        if (!def.IsValid(args[2], out var why)) { Console.WriteLine($"rejected: {why}"); return; }
+        store.Set(def.Key, SettingTarget.Application, args[2]);
+    }
+    Console.WriteLine($"{def.Key} = {store.GetString(def, SettingTarget.Application)}");
+    return;
+}
+
 if (args.Length > 0 && args[0].Equals("htmlprobe", StringComparison.OrdinalIgnoreCase))
 {
     // How do real messages declare their background? That decides whether a

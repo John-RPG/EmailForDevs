@@ -373,9 +373,12 @@ public static class SettingsCatalog
     public static readonly SettingDefinition MessageColumns = new(
         "display.message_columns",
         "Message list columns",
-        "Ordered, comma-separated column keys: status, fromname, fromaddress, to, " +
-        "received, size, subject.",
-        SettingKind.String, "status,fromname,fromaddress,to,received,size,subject",
+        "Ordered, comma-separated column keys, in the order they appear. Any key " +
+        "left out is hidden. Available: status, from, fromname, fromaddress, to, " +
+        "received, size, subject. \"from\" is the combined \"Name <address>\" form; " +
+        "\"fromname\" and \"fromaddress\" are the same thing split into two " +
+        "sortable columns.",
+        SettingKind.String, "status,from,to,received,size,subject",
         [Folder, Mailbox, Account, Application],
         Category: "Display");
 

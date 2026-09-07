@@ -490,6 +490,19 @@
                         <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center"
                                       VerticalAlignment="Stretch" ShowsPreview="True"/>
                         <wv2:WebView2 x:Name="PreviewView" Grid.Column="2"/>
+
+                        <!-- Over the preview, because that is what it changes.
+                             Per-message rather than only a setting: whether
+                             restyling helps depends on how the sender built the
+                             message, so the reader has to be able to flip it. -->
+                        <ToggleButton x:Name="BodyThemeToggle" Grid.Column="2"
+                                      Content="◐" FontSize="13" Padding="5,0"
+                                      HorizontalAlignment="Right" VerticalAlignment="Top"
+                                      Margin="0,4,20,0" Panel.ZIndex="10" MinHeight="20"
+                                      Click="OnToggleBodyTheme"
+                                      ToolTip="Showing the message as it was sent. Click to restyle it to match the app."
+                                      AutomationProperties.AutomationId="body-theme-toggle"
+                                      AutomationProperties.Name="Match message to app theme"/>
                     </Grid>
                 </Grid>
                             </avalon:LayoutAnchorable>

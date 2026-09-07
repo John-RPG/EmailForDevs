@@ -353,6 +353,50 @@ if (args.Length > 0 && args[0].Equals("theme", StringComparison.OrdinalIgnoreCas
     return;
 }
 
+if (args.Length > 0 && args[0].Equals("htmlprobe", StringComparison.OrdinalIgnoreCase))
+{
+    // How do real messages declare their background? That decides whether a
+    // zero-specificity default can ever apply, or whether restyling has to
+    // override what the sender set.
+    var entry = MailboxRegistry.List(appDb, enabledOnly: true)
+        .First(m => m.Upn.Contains("ExampleCorp", StringComparison.OrdinalIgnoreCase));
+    var path = Path.IsPathRooted(entry.DbPath) ? entry.DbPath : Path.GetFullPath(entry.DbPath);
+    using var db = MailboxDatabase.Open(path, entry.Dek);
+
+    using var cmd = db.CreateCommand();
+    cmd.CommandText = "SELECT id FROM messages ORDER BY received_at DESC LIMIT 40;";
+    var ids = new List<long>();
+    using (var r = cmd.ExecuteReader()) while (r.Read()) ids.Add(r.GetInt64(0));
+
+    int bodyBg = 0, tableBg = 0, inlineStyle = 0, styleBlock = 0, none = 0, examined = 0;
+    foreach (var id in ids)
+    {
+        var raw = MailboxStore.GetRawMessage(db, id);
+        if (raw is null) continue;
+        var mime = MimeKit.MimeMessage.Load(new MemoryStream(raw));
+        var html = mime.HtmlBody;
+        if (html is null) continue;
+        examined++;
+        var lower = html.ToLowerInvariant();
+        var hasBodyBg = System.Text.RegularExpressions.Regex.IsMatch(lower,
+            @"<body[^>]*(bgcolor|background-color|background\s*:)");
+        var hasTableBg = System.Text.RegularExpressions.Regex.IsMatch(lower,
+            @"<table[^>]*(bgcolor|background-color)");
+        if (hasBodyBg) bodyBg++;
+        if (hasTableBg) tableBg++;
+        if (lower.Contains("style=\"")) inlineStyle++;
+        if (lower.Contains("<style")) styleBlock++;
+        if (!hasBodyBg && !hasTableBg) none++;
+    }
+    Console.WriteLine($"examined {examined} HTML message(s):");
+    Console.WriteLine($"  <body> sets a background : {bodyBg}");
+    Console.WriteLine($"  <table> sets a background: {tableBg}");
+    Console.WriteLine($"  uses inline style=       : {inlineStyle}");
+    Console.WriteLine($"  has a <style> block      : {styleBlock}");
+    Console.WriteLine($"  declares no background   : {none}");
+    return;
+}
+
 if (args.Length > 0 && args[0].Equals("grantcap", StringComparison.OrdinalIgnoreCase))
 {
     // Records a capability as granted, but only after confirming the scopes are

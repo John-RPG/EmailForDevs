@@ -198,7 +198,28 @@ public partial class MainWindow : Window
             OpenProfile();
             BuildColumnsMenu();
             UpdateDraftsButton();
+            RestoreLayout();
             SyncPaneMenuState();
+            // Only after restoring, or loading the saved layout would itself
+            // trigger a save of the half-applied state.
+            Dock.LayoutChanged += (_, _) =>
+            {
+                SyncPaneMenuState();
+                QueueLayoutSave();
+            };
+
+            // LayoutChanged covers structural moves but not a pane being shown
+            // or hidden, so each anchorable is watched directly — otherwise
+            // closing a pane and quitting brings it back next launch.
+            foreach (var pane in Dock.Layout.Descendents()
+                         .OfType<AvalonDock.Layout.LayoutAnchorable>())
+            {
+                pane.IsVisibleChanged += (_, _) =>
+                {
+                    SyncPaneMenuState();
+                    QueueLayoutSave();
+                };
+            }
             SyncThemeMenuState();
             StartSync();
             // Delta is pull-only and Graph has no push route for a desktop
@@ -210,7 +231,20 @@ public partial class MainWindow : Window
             StartLiveUpdates();
         };
         Activated += OnWindowActivated;
+        Closing += (_, _) => SaveLayout();
         Closed += (_, _) => CloseAll();
+
+        // Saving only on close loses the arrangement to a crash or a forced
+        // quit. Debounced so dragging a splitter does not write on every frame.
+        // Long enough that the pane has finished moving into AvalonDock's
+        // hidden collection before the snapshot is taken, and that dragging a
+        // splitter does not write on every frame.
+        _layoutSaveTimer.Interval = TimeSpan.FromSeconds(5);
+        _layoutSaveTimer.Tick += (_, _) =>
+        {
+            _layoutSaveTimer.Stop();
+            SaveLayout();
+        };
     }
 
     /// <summary>
@@ -260,6 +294,9 @@ public partial class MainWindow : Window
     DateTimeOffset _lastFocusSync = DateTimeOffset.MinValue;
 
     CancellationTokenSource? _doorbell;
+
+    /// <summary>Debounces layout saves; see the constructor.</summary>
+    readonly System.Windows.Threading.DispatcherTimer _layoutSaveTimer = new();
 
     /// <summary>
     /// Starts the live-update loop: hold a long poll open per account, and run a
@@ -393,6 +430,14 @@ public partial class MainWindow : Window
         var mode = _settings?.GetString(SettingsCatalog.ThemeMode, SettingTarget.Application)
             ?? "system";
         Themes.ThemeManager.Apply(Themes.ThemeManager.Parse(mode));
+
+        // AvalonDock carries its own theme for the parts hand-written styles
+        // cannot reach — pane menus, drop targets, the auto-hide strip and the
+        // window chrome of floating panes. Setting it is what fixes the light
+        // patches that survived the app palette.
+        Dock.Theme = Themes.ThemeManager.IsDark
+            ? new AvalonDock.Themes.Vs2013DarkTheme()
+            : new AvalonDock.Themes.Vs2013LightTheme();
         Log(LogLevel.Verbose,
             $"Theme: {mode}{(mode == "system" ? $" (Windows is {(Themes.ThemeManager.IsDark ? "dark" : "light")})" : "")}.");
     }
@@ -422,6 +467,17 @@ public partial class MainWindow : Window
 
         if (item.IsChecked) pane.Show();
         else pane.Hide();
+        QueueLayoutSave();
+    }
+
+    /// <summary>
+    /// Debounced so dragging a splitter does not write on every frame, but
+    /// frequent enough that a crash or forced quit does not lose the layout.
+    /// </summary>
+    void QueueLayoutSave()
+    {
+        _layoutSaveTimer.Stop();
+        _layoutSaveTimer.Start();
     }
 
     /// <summary>Keeps the View menu honest when a pane is closed by its own X.</summary>
@@ -462,18 +518,65 @@ public partial class MainWindow : Window
     /// Returns the panes to their default arrangement. Docking is powerful
     /// enough to make a mess with, so there has to be a way back.
     /// </summary>
+    /// <summary>
+    /// Discards the saved arrangement and shows every pane. Docking is powerful
+    /// enough to make a mess with, so there has to be a way back.
+    /// </summary>
     void OnResetLayout(object sender, RoutedEventArgs e)
     {
-        // Every pane is shown again and the View menu re-synced. The arrangement
-        // itself is not persisted between sessions — AvalonDock 5 replaced its
-        // XML layout serializer with a DTO mapper that has no file I/O, and
-        // hand-rolling that is not worth guessing at — so a restart already
-        // returns the default arrangement.
+        try
+        {
+            if (File.Exists(LayoutFile)) File.Delete(LayoutFile);
+        }
+        catch (IOException ex)
+        {
+            Log(LogLevel.Warning, $"Could not remove the saved layout: {ex.Message}");
+        }
+
         foreach (var pane in Dock.Layout.Descendents()
                      .OfType<AvalonDock.Layout.LayoutAnchorable>())
             pane.Show();
         SyncPaneMenuState();
-        Log("All panes shown. Pane sizes return to their defaults on restart.");
+        Log("Layout reset. Pane sizes return to their defaults on restart.");
+    }
+
+    string LayoutFile => Path.Combine(_scratchRoot ?? ".", "profile", "layout.xml");
+
+    /// <summary>
+    /// Saves the pane arrangement. The point of docking is arranging things
+    /// once, not every session.
+    /// </summary>
+    void SaveLayout()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(LayoutFile)!);
+            var serializer = new AvalonDock.Serializer.Xml.XmlLayoutSerializer(Dock);
+            using var writer = new StreamWriter(LayoutFile);
+            serializer.Serialize(writer);
+        }
+        catch (Exception ex)
+        {
+            Log(LogLevel.Verbose, $"Could not save the layout: {ex.Message}");
+        }
+    }
+
+    void RestoreLayout()
+    {
+        if (!File.Exists(LayoutFile)) return;
+        try
+        {
+            var serializer = new AvalonDock.Serializer.Xml.XmlLayoutSerializer(Dock);
+            using var reader = new StreamReader(LayoutFile);
+            serializer.Deserialize(reader);
+            Log(LogLevel.Verbose, "Layout restored.");
+        }
+        catch (Exception ex)
+        {
+            // A layout saved by an older build can name panes that no longer
+            // exist. Falling back to the default beats refusing to start.
+            Log(LogLevel.Warning, $"Saved layout could not be used: {ex.Message}");
+        }
     }
 
     void OnShowSearchHelp(object sender, RoutedEventArgs e) =>

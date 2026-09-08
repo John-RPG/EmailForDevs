@@ -207,6 +207,8 @@ public partial class MainWindow : Window
         Loaded += (_, _) =>
         {
             OpenProfile();
+            // The HWND exists only now, and the title bar is drawn from it.
+            Themes.ThemeManager.ApplyTitleBar(this);
             ApplyColumnLayout(null);
             ApplyRowDensity(null);
             BuildColumnsMenu();

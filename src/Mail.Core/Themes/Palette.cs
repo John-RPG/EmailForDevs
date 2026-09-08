@@ -85,7 +85,14 @@ public static class Palette
 
         // ---- selection and accent -----------------------------------------
         new("Accent",                "#0067C0", "#528BFF", ColourRole.AccentSurface),
-        new("Selection.Background",  "#CCE4F7", "#3E4451", ColourRole.Background),
+        // The fill is deliberately only a tint. Measured, it tops out around
+        // 1.5:1 against the rows either side, and going deeper to chase that
+        // costs text contrast on the selected row faster than it gains
+        // visibility: #454D5D reads 1.65:1 against the base but drops row text
+        // to 3.98:1, under AA. #3E4451 keeps text at 4.58:1. So the fill stays a
+        // tint and Selection.Edge does the work of finding the row — at 4.33:1
+        // against the base and 3.55:1 against hover, it clears 3:1 comfortably.
+        new("Selection.Background",  "#BBDBF4", "#3E4451", ColourRole.Background),
         // A left edge on the selected row, which reads faster than a fill alone
         // and survives being printed or screenshotted in greyscale.
         new("Selection.Edge",        "#0067C0", "#528BFF", ColourRole.AccentSurface),

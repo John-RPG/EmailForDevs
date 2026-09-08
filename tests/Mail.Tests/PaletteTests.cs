@@ -87,6 +87,34 @@ public sealed class PaletteTests
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void The_selected_row_can_be_found_by_its_edge(bool dark)
+    {
+        // The fill alone cannot mark the selected row. It sits between the base,
+        // the stripe and the hover tint, and it cannot move far from them
+        // without dropping the text on top of it below AA — measured, the fill
+        // is about 1.4:1 against its neighbours whatever we do. So the edge is
+        // what makes selection findable, and it is held to the 3:1 that applies
+        // to a meaningful non-text indicator.
+        //
+        // Worth keeping because the failure mode was invisible: the edge was
+        // specified for months while the stock DataGridRow template quietly
+        // discarded it, and no test noticed.
+        const double Indicator = 3.0;
+        var edge = Palette.ByKey("Selection.Edge")!;
+        foreach (var key in new[] { "Chrome.Background", "Row.Stripe", "Row.Hover" })
+        {
+            var behind = Palette.ByKey(key)!;
+            var ratio = Palette.ContrastRatio(
+                dark ? edge.Dark : edge.Light,
+                dark ? behind.Dark : behind.Light);
+            Assert.True(ratio >= Indicator,
+                $"{(dark ? "dark" : "light")} selection edge on {key} is {ratio:N2}:1");
+        }
+    }
+
     [Fact]
     public void Risk_colours_are_distinguishable_from_body_text()
     {

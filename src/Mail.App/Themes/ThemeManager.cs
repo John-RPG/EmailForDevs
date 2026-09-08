@@ -64,7 +64,38 @@ public static class ThemeManager
                 Source = new Uri("pack://application:,,,/Themes/DockStyles.xaml", UriKind.Absolute),
             });
         }
+
+        foreach (var window in Application.Current.Windows.OfType<Window>())
+            ApplyTitleBar(window);
     }
+
+    /// <summary>
+    /// Darkens the title bar, which WPF cannot style because it is drawn by the
+    /// window manager rather than by the app. Without this the app has a bright
+    /// white cap in dark mode, which is the single most obvious wrong thing on
+    /// screen. Best-effort: the attribute is Windows 10 1809 and later, and the
+    /// older build used a different id for it.
+    /// </summary>
+    public static void ApplyTitleBar(Window window)
+    {
+        try
+        {
+            var handle = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+            if (handle == IntPtr.Zero) return;   // not shown yet; re-applied on load
+            var dark = IsDark ? 1 : 0;
+            // 20 since 1903; 19 on 1809. Trying the current one first and only
+            // falling back keeps the newer path free of a pointless second call.
+            if (DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int)) != 0)
+                DwmSetWindowAttribute(handle, 19, ref dark, sizeof(int));
+        }
+        catch (DllNotFoundException)
+        {
+            // No dwmapi: nothing to darken, and not a reason to fail startup.
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
     static ResourceDictionary Build(bool dark)
     {

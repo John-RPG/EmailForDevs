@@ -140,18 +140,78 @@
         <!-- 22px: dense enough to see a screenful of mail, tall enough that
              rows do not run together. -->
         <Setter Property="MinHeight" Value="22"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <!--
+                  Retemplated so the selected row can actually draw an edge. The
+                  stock template puts the cells in a SelectiveScrollingGrid that
+                  never consumes BorderBrush or BorderThickness, so setting them
+                  in a trigger — as this style used to — silently drew nothing.
+
+                  This matters more than it sounds: a selection fill can only be
+                  a slight tint, because it has to stay dark enough for the row
+                  text to remain readable on top of it. Measured, the fill is
+                  about 1.4:1 against the rows around it, which is nowhere near
+                  enough on its own. The accent edge is 3.6-4.3:1 in dark and
+                  5.1-5.7:1 in light, so the edge is what makes the selection
+                  findable and the fill merely confirms it.
+                -->
+                <ControlTemplate TargetType="DataGridRow">
+                    <Border x:Name="RowBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            SnapsToDevicePixels="True">
+                        <SelectiveScrollingGrid>
+                            <SelectiveScrollingGrid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </SelectiveScrollingGrid.ColumnDefinitions>
+                            <SelectiveScrollingGrid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </SelectiveScrollingGrid.RowDefinitions>
+                            <DataGridCellsPresenter Grid.Column="1"
+                                ItemsPanel="{TemplateBinding ItemsPanel}"
+                                SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}"/>
+                            <DataGridDetailsPresenter Grid.Column="1" Grid.Row="1"
+                                Visibility="{TemplateBinding DetailsVisibility}"/>
+                            <DataGridRowHeader Grid.RowSpan="2"
+                                SelectiveScrollingGrid.SelectiveScrollingOrientation="Vertical"
+                                Visibility="{Binding HeadersVisibility,
+                                    RelativeSource={RelativeSource AncestorType=DataGrid},
+                                    Converter={x:Static DataGrid.HeadersVisibilityConverter},
+                                    ConverterParameter=Row}"/>
+                        </SelectiveScrollingGrid>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="RowBorder" Property="Background"
+                                    Value="{DynamicResource Row.Hover}"/>
+                        </Trigger>
+                        <!-- Selection last, so it wins over hover: the row the
+                             pointer happens to rest on must not disguise which
+                             row is actually selected. -->
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="RowBorder" Property="Background"
+                                    Value="{DynamicResource Selection.Background}"/>
+                            <Setter TargetName="RowBorder" Property="BorderBrush"
+                                    Value="{DynamicResource Selection.Edge}"/>
+                            <Setter TargetName="RowBorder" Property="BorderThickness"
+                                    Value="3,1,0,1"/>
+                            <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
         <Style.Triggers>
-            <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource Row.Hover}"/>
-            </Trigger>
-            <Trigger Property="IsSelected" Value="True">
-                <Setter Property="Background" Value="{DynamicResource Selection.Background}"/>
-                <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
-                <!-- A left edge as well as a fill: faster to spot, and it still
-                     reads when the fill is too subtle to notice. -->
-                <Setter Property="BorderBrush" Value="{DynamicResource Selection.Edge}"/>
-                <Setter Property="BorderThickness" Value="3,0,0,0"/>
-            </Trigger>
+            <!-- Lives here rather than on the DataGrid, because an explicit
+                 RowStyle would replace this whole style, template included. -->
+            <DataTrigger Binding="{Binding IsUnread}" Value="True">
+                <Setter Property="FontWeight" Value="Bold"/>
+            </DataTrigger>
         </Style.Triggers>
     </Style>
 
@@ -180,6 +240,34 @@
         <Setter Property="Padding" Value="8,5"/>
         <Setter Property="MinHeight" Value="26"/>
         <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <!-- Same reason as DataGridRow: the stock header template paints
+                     its own light chrome and never uses Background, so in dark
+                     mode the header strip stayed white above a dark grid. -->
+                <ControlTemplate TargetType="DataGridColumnHeader">
+                    <Grid>
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                VerticalAlignment="Center"/>
+                        </Border>
+                        <!-- Kept so columns stay resizable by dragging the edge. -->
+                        <Thumb x:Name="PART_LeftHeaderGripper" HorizontalAlignment="Left"
+                               Width="8" Cursor="SizeWE" Opacity="0" Background="Transparent"/>
+                        <Thumb x:Name="PART_RightHeaderGripper" HorizontalAlignment="Right"
+                               Width="8" Cursor="SizeWE" Opacity="0" Background="Transparent"/>
+                    </Grid>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <Style TargetType="GridViewColumnHeader">
@@ -226,6 +314,20 @@
     <Style TargetType="Menu">
         <Setter Property="Background" Value="{DynamicResource Chrome.Alt}"/>
         <Setter Property="Foreground" Value="{DynamicResource Text.Primary}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <!-- The stock Menu template paints a fixed light background over
+                     whatever Background is set to, which left a white bar across
+                     the top of the window in dark mode. -->
+                <ControlTemplate TargetType="Menu">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}">
+                        <ItemsPresenter/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
     </Style>
 
     <Style TargetType="ContextMenu">

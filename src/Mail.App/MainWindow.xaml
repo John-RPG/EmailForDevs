@@ -5,7 +5,9 @@
         xmlns:local="clr-namespace:Mail.App"
         xmlns:avalon="https://github.com/Dirkster99/AvalonDock"
         Title="eeeMail (dev)" Height="850" Width="1500" FontSize="12"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource Chrome.Background}"
+        Foreground="{DynamicResource Text.Primary}">
     <Window.Resources>
                     
                         <Style x:Key="FolderRowStyle" TargetType="TreeViewItem">
@@ -232,12 +234,17 @@
             </MenuItem>
         </Menu>
 
-        <DockPanel Grid.Row="1" Margin="4,4,4,2">
+        <!-- Explicitly painted. An unset Background falls through to the window,
+             which is the system default rather than the theme, so the strip
+             behind these buttons stayed light in dark mode. -->
+        <DockPanel Grid.Row="1" Background="{DynamicResource Chrome.Alt}"
+                   LastChildFill="True" Margin="0"
+                   TextElement.Foreground="{DynamicResource Text.Primary}">
             <!-- Compose actions, then actions on the selected message. Delete,
                  mark read and move were reachable only from the context menu,
                  so a new user could not find them at all. -->
             <Button DockPanel.Dock="Left" Content="New" Click="OnComposeNew"
-                    Margin="0,0,4,0" Padding="12,2" ToolTip="New message (Ctrl+N)"
+                    Margin="6,4,4,4" Padding="12,2" ToolTip="New message (Ctrl+N)"
                     AutomationProperties.AutomationId="cmd-new"/>
             <Button DockPanel.Dock="Left" Content="Reply" Click="OnReply"
                     Margin="0,0,4,0" Padding="10,2" ToolTip="Reply (Ctrl+R)"
@@ -324,15 +331,13 @@
                             <avalon:LayoutDocument Title="Messages" ContentId="messages"
                                                    CanClose="False" CanFloat="True">
                                 <DataGrid xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="MessageGrid"  AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow" GridLinesVisibility="None" RowHeaderWidth="0" BorderThickness="0,1,0,0" HeadersVisibility="Column" EnableRowVirtualization="True" VirtualizingPanel.VirtualizationMode="Recycling" CanUserAddRows="False" CanUserDeleteRows="False" SelectionChanged="OnMessageSelected" PreviewKeyDown="OnGridKeyDown">
-                    <DataGrid.RowStyle>
-                        <Style TargetType="DataGridRow">
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsUnread}" Value="True">
-                                    <Setter Property="FontWeight" Value="Bold" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </DataGrid.RowStyle>
+                    <!-- No RowStyle here on purpose. An explicit one replaces the
+                         implicit themed style outright rather than extending it,
+                         which silently dropped the row template and made the
+                         selected row invisible; BasedOn cannot fix it either,
+                         because the themed dictionary is merged at runtime and a
+                         StaticResource lookup here runs before that. The bold
+                         unread trigger now lives in ControlStyles.xaml. -->
                     <DataGrid.Columns>
                         <DataGridTextColumn x:Name="ColStatus" Header="" Binding="{Binding Status}" Width="Auto" CanUserResize="False" />
                         <DataGridTextColumn x:Name="ColFrom" Header="From" Binding="{Binding From}" Width="Auto" />
@@ -380,13 +385,38 @@
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    <TextBox x:Name="EnvelopeText" Grid.Row="0" IsReadOnly="True"
-                             BorderThickness="0,1,0,1" FontFamily="Consolas"
+
+                    <!-- A real header strip, in WPF's own layout. The theme
+                         toggle used to float over the WebView2, which hosts a
+                         native surface that draws above WPF regardless of
+                         ZIndex, so it was invisible whenever a message was
+                         loaded. Here it is always reachable, and labelled
+                         rather than a bare glyph nobody could identify. -->
+                    <Border Grid.Row="0" Background="{DynamicResource Chrome.Alt}"
+                            BorderBrush="{DynamicResource Chrome.Border}"
+                            BorderThickness="0,0,0,1" Padding="8,3">
+                        <DockPanel>
+                            <ToggleButton x:Name="BodyThemeToggle" DockPanel.Dock="Right"
+                                          Content="◐  Match app theme"
+                                          Padding="8,2" MinHeight="22"
+                                          Click="OnToggleBodyTheme"
+                                          ToolTip="Showing the message as it was sent. Click to restyle it to match the app."
+                                          AutomationProperties.AutomationId="body-theme-toggle"
+                                          AutomationProperties.Name="Match message to app theme"/>
+                            <TextBlock Text="Message" VerticalAlignment="Center"
+                                       FontWeight="SemiBold"
+                                       Foreground="{DynamicResource Text.Secondary}"/>
+                        </DockPanel>
+                    </Border>
+
+                    <TextBox x:Name="EnvelopeText" Grid.Row="1" IsReadOnly="True"
+                             BorderThickness="0,0,0,1" FontFamily="Consolas"
                              TextWrapping="Wrap" MaxHeight="120"
                              VerticalScrollBarVisibility="Auto" Background="Transparent"/>
-                    <Grid Grid.Row="1">
+                    <Grid Grid.Row="2">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" MinWidth="200"/>
                             <ColumnDefinition Width="Auto"/>
@@ -490,19 +520,6 @@
                         <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Center"
                                       VerticalAlignment="Stretch" ShowsPreview="True"/>
                         <wv2:WebView2 x:Name="PreviewView" Grid.Column="2"/>
-
-                        <!-- Over the preview, because that is what it changes.
-                             Per-message rather than only a setting: whether
-                             restyling helps depends on how the sender built the
-                             message, so the reader has to be able to flip it. -->
-                        <ToggleButton x:Name="BodyThemeToggle" Grid.Column="2"
-                                      Content="◐" FontSize="13" Padding="5,0"
-                                      HorizontalAlignment="Right" VerticalAlignment="Top"
-                                      Margin="0,4,20,0" Panel.ZIndex="10" MinHeight="20"
-                                      Click="OnToggleBodyTheme"
-                                      ToolTip="Showing the message as it was sent. Click to restyle it to match the app."
-                                      AutomationProperties.AutomationId="body-theme-toggle"
-                                      AutomationProperties.Name="Match message to app theme"/>
                     </Grid>
                 </Grid>
                             </avalon:LayoutAnchorable>

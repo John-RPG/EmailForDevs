@@ -230,6 +230,9 @@
                 <MenuItem Header="Search _syntax" Click="OnShowSearchHelp"/>
                 <MenuItem Header="_Keyboard shortcuts" Click="OnShowShortcuts"/>
                 <Separator/>
+                <MenuItem Header="Check for _updates…" Click="OnCheckUpdatesClick"
+                          AutomationProperties.AutomationId="menu-check-updates"/>
+                <Separator/>
                 <MenuItem Header="_About eeeMail" Click="OnShowAbout"/>
             </MenuItem>
         </Menu>
@@ -568,6 +571,14 @@
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
                 <StackPanel Orientation="Horizontal">
+                    <!-- Hidden until a newer release is found. A notice rather
+                         than a dialog on launch: the app should not interrupt
+                         someone opening their mail to talk about itself. -->
+                    <Button x:Name="UpdateButton" Margin="0,0,12,0" Padding="8,1"
+                            Visibility="Collapsed" Click="OnUpdateClick"
+                            Background="{DynamicResource Accent}"
+                            Foreground="#FFFFFF"
+                            AutomationProperties.AutomationId="cmd-update"/>
                     <TextBlock x:Name="ScanLabel" Margin="0,0,12,0" VerticalAlignment="Center"
                                Foreground="{DynamicResource Text.Secondary}"/>
                     <TextBlock x:Name="SyncLabel" Margin="0,0,8,0" VerticalAlignment="Center"/>

@@ -209,6 +209,12 @@ public partial class MainWindow : Window
             OpenProfile();
             // The HWND exists only now, and the title bar is drawn from it.
             Themes.ThemeManager.ApplyTitleBar(this);
+
+            // Not awaited: a slow or unreachable GitHub must not hold up the
+            // window, and the result only reveals a status bar button.
+            if (_settings?.GetBool(
+                    SettingsCatalog.CheckForUpdates, SettingTarget.Application) == true)
+                _ = CheckForUpdatesAsync(announceResult: false);
             ApplyColumnLayout(null);
             ApplyRowDensity(null);
             BuildColumnsMenu();
@@ -633,6 +639,99 @@ public partial class MainWindow : Window
             "mailbox, with content-addressed deduplication.",
             "About eeeMail", MessageBoxButton.OK, MessageBoxImage.Information);
     }
+
+    // ---- updates -------------------------------------------------------------
+
+    /// <summary>
+    /// The release found by the last check, held so the status bar button and
+    /// the menu item both act on the same thing rather than re-fetching.
+    /// </summary>
+    Mail.Core.Update.ReleaseInfo? _availableUpdate;
+
+    /// <summary>
+    /// Shared for update traffic, because HttpClient is meant to be long-lived:
+    /// one per request exhausts sockets under repeated checks.
+    /// </summary>
+    static readonly HttpClient _updateHttp = new() { Timeout = TimeSpan.FromMinutes(10) };
+
+    /// <summary>Where the download is staged. Under the profile, not the system temp.</summary>
+    string UpdateStagingDirectory =>
+        Path.Combine(_scratchRoot ?? ".", "profile", "update");
+
+    /// <summary>
+    /// Looks for a newer release. Quiet by default: a launch check that cannot
+    /// reach GitHub says nothing, because failing to check is not news. Asked
+    /// for explicitly from the menu, it reports either way.
+    /// </summary>
+    async Task CheckForUpdatesAsync(bool announceResult)
+    {
+        if (_settings is null) return;
+        var repo = _settings.GetString(
+            SettingsCatalog.UpdateRepository, SettingTarget.Application);
+        var parts = repo?.Split('/', StringSplitOptions.TrimEntries) ?? [];
+        if (parts.Length != 2 || parts.Any(string.IsNullOrEmpty))
+        {
+            Log(LogLevel.Warning, $"Update source '{repo}' is not owner/repo; skipping check.");
+            return;
+        }
+
+        try
+        {
+            var checker = new Mail.Core.Update.UpdateChecker(_updateHttp, parts[0], parts[1]);
+            var latest = await checker.LatestAsync();
+            var running = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
+                ?? new Version(0, 0, 0);
+
+            if (latest is null || !Mail.Core.Update.UpdateChecker.IsNewer(latest.Version, running))
+            {
+                _availableUpdate = null;
+                UpdateButton.Visibility = Visibility.Collapsed;
+                Log($"Up to date ({running.ToString(3)}).");
+                if (announceResult)
+                    MessageBox.Show(this,
+                        $"eeeMail {running.ToString(3)} is the latest release.",
+                        "No update available", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            _availableUpdate = latest;
+            UpdateButton.Content = $"Update to {latest.Tag}";
+            UpdateButton.ToolTip =
+                $"eeeMail {latest.Tag} is available. Click to see what it is before installing.";
+            UpdateButton.SetValue(
+                System.Windows.Automation.AutomationProperties.NameProperty,
+                $"Update available: {latest.Tag}");
+            UpdateButton.Visibility = Visibility.Visible;
+            Log($"Update available: {latest.Tag}.");
+
+            // Only surface a window when the user asked. On launch the status bar
+            // button is the whole notification.
+            if (announceResult) ShowUpdateWindow();
+        }
+        catch (Exception ex) when (
+            ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            Log(LogLevel.Warning, $"Update check failed: {ex.Message}");
+            if (announceResult)
+                MessageBox.Show(this,
+                    $"Could not reach the update source.\n\n{ex.Message}",
+                    "Update check failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    void ShowUpdateWindow()
+    {
+        if (_availableUpdate is null) return;
+        new UpdateWindow(_availableUpdate, _updateHttp, UpdateStagingDirectory, Log)
+        {
+            Owner = this,
+        }.ShowDialog();
+    }
+
+    void OnUpdateClick(object sender, RoutedEventArgs e) => ShowUpdateWindow();
+
+    async void OnCheckUpdatesClick(object sender, RoutedEventArgs e) =>
+        await CheckForUpdatesAsync(announceResult: true);
 
     void Log(string line) => Log(LogLevel.Info, line);
 

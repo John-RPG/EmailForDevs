@@ -394,6 +394,30 @@ public static class SettingsCatalog
                  "hostname, which receiving spam filters treat as a forgery signal.",
         Category: "Composing");
 
+    // ---- updates ------------------------------------------------------------
+
+    public static readonly SettingDefinition CheckForUpdates = new(
+        "update.check_on_launch",
+        "Check for updates on launch",
+        "Ask GitHub once per launch whether a newer release exists. Only the " +
+        "check is automatic: nothing is downloaded or installed without asking.",
+        SettingKind.Bool, "true",
+        [Application],
+        Category: "Updates");
+
+    public static readonly SettingDefinition UpdateRepository = new(
+        "update.repository",
+        "Update source",
+        "The owner/repo that releases are fetched from. Point this at a fork to " +
+        "take updates from somewhere else.",
+        SettingKind.String, "John-RPG/EmailForDevs",
+        [Application],
+        Risk: SettingRisk.Security,
+        Warning: "Updates are executable code. Point this only at a repository " +
+                 "you trust as much as the original, because whoever controls it " +
+                 "controls what runs on this machine.",
+        Category: "Updates");
+
     // ---- diagnostics --------------------------------------------------------
 
     public static readonly SettingDefinition LogLevel = new(
@@ -442,6 +466,7 @@ public static class SettingsCatalog
         SignatureSource, SignatureText, SignatureOnReply,
         ReplyQuoteStyle, ReplyAboveQuote,
         SendDelaySeconds, SaveToSent, RequestReadReceipts, SendReadReceipts,
+        CheckForUpdates, UpdateRepository,
         LogLevel, LogGraphRequests, KeepRawMime,
     ];
 

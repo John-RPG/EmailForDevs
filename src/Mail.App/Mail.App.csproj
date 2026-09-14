@@ -23,6 +23,29 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <AssemblyName>eeeMail</AssemblyName>
+    <ApplicationIcon></ApplicationIcon>
+
+    <!-- The single source of truth for the running version. The updater
+         compares this against the latest GitHub release tag, so a release must
+         bump it here or the new build will not recognise itself as newer. -->
+    <Version>0.1.0</Version>
+    <InformationalVersion>0.1.0</InformationalVersion>
+    <Product>eeeMail</Product>
+    <Company>John Hadlow</Company>
+  </PropertyGroup>
+
+  <!-- Publish profile for releases: one self-contained file that runs on a
+       machine with no .NET installed. Not compressed, because a compressed
+       single file extracts to temp on every launch. Trimming is off: WPF and
+       the Graph SDK both reflect over types the trimmer cannot see. -->
+  <PropertyGroup Condition="'$(PublishSingleFile)' == 'true'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <DebugType>embedded</DebugType>
   </PropertyGroup>
 
 </Project>

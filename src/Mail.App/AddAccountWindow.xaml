@@ -1,0 +1,67 @@
+﻿<Window x:Class="Mail.App.AddAccountWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add an account" Height="430" Width="540" FontSize="12"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False" ResizeMode="NoResize"
+        Background="{DynamicResource Chrome.Background}"
+        Foreground="{DynamicResource Text.Primary}">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,14">
+            <TextBlock FontSize="17" FontWeight="SemiBold" Text="Which kind of account?"/>
+            <TextBlock TextWrapping="Wrap" Margin="0,6,0,0"
+                       Foreground="{DynamicResource Text.Secondary}"
+                       Text="Signing in opens your browser. eeeMail asks only for permission to read and send your mail, and can never reach anything you could not reach yourself."/>
+        </StackPanel>
+
+        <Border Grid.Row="1" Background="{DynamicResource Chrome.Alt}"
+                BorderBrush="{DynamicResource Chrome.Border}" BorderThickness="1"
+                Padding="14,12">
+            <StackPanel>
+                <RadioButton x:Name="MicrosoftOption" IsChecked="True" GroupName="Provider"
+                             AutomationProperties.AutomationId="provider-microsoft">
+                    <StackPanel Margin="4,0,0,0">
+                        <TextBlock Text="Microsoft 365 or Outlook.com" FontWeight="SemiBold"/>
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Margin="0,2,0,0"
+                                   Foreground="{DynamicResource Text.Secondary}"
+                                   Text="Work or school accounts, and personal outlook.com, hotmail.com and live.com addresses."/>
+                    </StackPanel>
+                </RadioButton>
+
+                <!-- Listed but disabled, rather than omitted. The button used to
+                     go straight to a Microsoft sign-in with no warning, which
+                     told the reader nothing about what was and was not supported. -->
+                <RadioButton x:Name="ImapOption" IsEnabled="False" GroupName="Provider"
+                             Margin="0,14,0,0"
+                             AutomationProperties.AutomationId="provider-imap">
+                    <StackPanel Margin="4,0,0,0">
+                        <TextBlock Text="IMAP / SMTP — not yet supported" FontWeight="SemiBold"/>
+                        <TextBlock TextWrapping="Wrap" FontSize="11" Margin="0,2,0,0"
+                                   Foreground="{DynamicResource Text.Secondary}"
+                                   Text="Gmail, Fastmail, self-hosted and everything else. Planned, not built. Until then eeeMail can only add Microsoft accounts."/>
+                    </StackPanel>
+                </RadioButton>
+            </StackPanel>
+        </Border>
+
+        <TextBlock Grid.Row="2" TextWrapping="Wrap" VerticalAlignment="Top" Margin="0,14,0,0"
+                   FontSize="11" Foreground="{DynamicResource Text.Secondary}"
+                   Text="The sign-in happens in your normal browser rather than through Windows, so the account is not attached to this device — it stays inside eeeMail."/>
+
+        <DockPanel Grid.Row="3" Margin="0,12,0,0">
+            <Button x:Name="ContinueButton" DockPanel.Dock="Right" Content="Sign in…"
+                    Padding="18,5" Margin="8,0,0,0" IsDefault="True" Click="OnContinue"
+                    AutomationProperties.AutomationId="provider-continue"/>
+            <Button DockPanel.Dock="Right" Content="Cancel" Padding="18,5"
+                    IsCancel="True" Click="OnCancel"
+                    AutomationProperties.AutomationId="provider-cancel"/>
+            <TextBlock/>
+        </DockPanel>
+    </Grid>
+</Window>

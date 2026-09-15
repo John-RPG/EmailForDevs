@@ -3168,6 +3168,22 @@ public partial class MainWindow : Window
     async Task<string> AddAccountInteractiveAsync()
     {
         if (_appDb is null || _dataDir is null) return "";
+
+        // Ask before opening a browser at a provider's sign-in page. Microsoft
+        // is the only one that works, but jumping straight there said nothing
+        // about what is supported and assumed the account they meant.
+        var chooser = new AddAccountWindow
+        {
+            Owner = Application.Current.Windows.OfType<SettingsWindow>().FirstOrDefault()
+                    ?? (Window)this,
+        };
+        chooser.ShowDialog();
+        if (chooser.Provider is null)
+        {
+            Log("Add account cancelled.");
+            return "";
+        }
+
         try
         {
             var auth = new GraphAuthenticator(

@@ -11,7 +11,10 @@ UI, honest local storage, fast search.
   Telerik/Syncfusion serve as interaction-design references only), no ORM, no DI
   framework. New packages must earn their place; prefer BCL and hand-rolled.
 - MailKit/MimeKit — IMAP/SMTP/POP3 + MIME parsing.
-- Microsoft.Graph + MSAL (WAM broker) — Outlook.com and M365 accounts, first-class.
+- Microsoft.Graph + MSAL — Outlook.com and M365 accounts, first-class. Sign-in
+  goes through the system browser on a loopback redirect, deliberately *not* the
+  WAM broker: the broker attaches the account to Windows itself, which is a
+  side effect a mail client has no business causing.
 - Microsoft.Data.Sqlite — storage, FTS5 for search.
 - Brotli (built-in) — compression of raw message blobs.
 

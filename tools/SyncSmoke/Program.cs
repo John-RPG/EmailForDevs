@@ -509,6 +509,23 @@ if (args.Length > 0 && args[0].Equals("setsig", StringComparison.OrdinalIgnoreCa
     return;
 }
 
+if (args.Length > 0 && args[0].Equals("caps", StringComparison.OrdinalIgnoreCase))
+{
+    // Read-only view of granted vs pending, for checking the two are not
+    // conflated after a migration.
+    foreach (var entry in MailboxRegistry.List(appDb).Where(m => m.Kind == "primary"))
+    {
+        var granted = MailboxRegistry.GetCapabilities(appDb, entry.Upn);
+        var pending = MailboxRegistry.GetPendingCapabilities(appDb, entry.Upn);
+        Console.WriteLine($"=== {entry.Upn} ===");
+        Console.WriteLine($"  granted: {(granted.Count == 0 ? "(none)" : string.Join(", ", granted.OrderBy(x => x)))}");
+        Console.WriteLine($"  pending: {(pending.Count == 0 ? "(none)" : string.Join(", ", pending.OrderBy(x => x)))}");
+        var both = granted.Intersect(pending, StringComparer.OrdinalIgnoreCase).ToList();
+        if (both.Count > 0) Console.WriteLine($"  BOTH (bug): {string.Join(", ", both)}");
+    }
+    return;
+}
+
 if (args.Length > 0 && args[0].Equals("grantcap", StringComparison.OrdinalIgnoreCase))
 {
     // Records a capability as granted, but only after confirming the scopes are

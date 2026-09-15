@@ -71,6 +71,14 @@
                                                 Visibility="{Binding GrantedVisibility}">
                                             <TextBlock Text="granted" Foreground="White" FontSize="10"/>
                                         </Border>
+                                        <!-- Asked for, not yet approved. Distinct from
+                                             "granted" so the switch being on does not
+                                             imply the feature works yet. -->
+                                        <Border Style="{StaticResource RiskChip}" Background="{DynamicResource Risk.Performance}"
+                                                Visibility="{Binding PendingVisibility}"
+                                                ToolTip="Requested. An administrator has to approve it before it works. Your choice is remembered — press Apply and sign in again once approved.">
+                                            <TextBlock Text="awaiting approval" Foreground="White" FontSize="10"/>
+                                        </Border>
                                     </StackPanel>
 
                                     <TextBlock Text="{Binding Summary}" TextWrapping="Wrap"

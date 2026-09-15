@@ -143,4 +143,63 @@ public sealed class MailboxRegistryTests : IDisposable
         Assert.False(MailboxRegistry.RemoveShared(_appDb, primary.Id, _dir));
         Assert.Single(MailboxRegistry.List(_appDb));
     }
+    [Fact]
+    public void A_pending_capability_is_remembered_but_not_usable()
+    {
+        // The reported bug: in a tenant where consent goes to an administrator,
+        // the request returns nothing, which used to be recorded as a refusal.
+        // The toggles reset, and the whole selection had to be made again after
+        // approval arrived.
+        AddAccount("john@example.com");
+        MailboxRegistry.SetCapabilityPending(_appDb, "john@example.com", "shared-mail");
+
+        // Remembered, so the choice survives and the UI can keep it switched on.
+        Assert.Contains("shared-mail",
+            MailboxRegistry.GetPendingCapabilities(_appDb, "john@example.com"));
+
+        // But not usable: treating it as granted would make the app request
+        // scopes it does not hold on every launch, prompting a browser each time.
+        Assert.DoesNotContain("shared-mail",
+            MailboxRegistry.GetCapabilities(_appDb, "john@example.com"));
+        Assert.False(MailboxRegistry.HasCapability(_appDb, "john@example.com", "shared-mail"));
+    }
+
+    [Fact]
+    public void Approval_turns_a_pending_capability_into_a_granted_one()
+    {
+        AddAccount("john@example.com");
+        MailboxRegistry.SetCapabilityPending(_appDb, "john@example.com", "shared-mail");
+        MailboxRegistry.SetCapability(_appDb, "john@example.com", "shared-mail", true);
+
+        Assert.Contains("shared-mail",
+            MailboxRegistry.GetCapabilities(_appDb, "john@example.com"));
+        // No longer pending: a capability must not be in both states at once, or
+        // the UI would show "granted" and "awaiting approval" together.
+        Assert.Empty(MailboxRegistry.GetPendingCapabilities(_appDb, "john@example.com"));
+    }
+
+    [Fact]
+    public void Refusing_a_capability_clears_it_from_both_states()
+    {
+        AddAccount("john@example.com");
+        MailboxRegistry.SetCapabilityPending(_appDb, "john@example.com", "shared-mail");
+        MailboxRegistry.SetCapability(_appDb, "john@example.com", "shared-mail", false);
+
+        Assert.Empty(MailboxRegistry.GetCapabilities(_appDb, "john@example.com"));
+        Assert.Empty(MailboxRegistry.GetPendingCapabilities(_appDb, "john@example.com"));
+    }
+
+    [Fact]
+    public void A_granted_capability_can_be_demoted_back_to_pending()
+    {
+        // What the launch-time check does when the scopes turn out to be absent:
+        // the feature must stop working, but the request is still the user's.
+        AddAccount("john@example.com");
+        MailboxRegistry.SetCapability(_appDb, "john@example.com", "shared-mail", true);
+        MailboxRegistry.SetCapabilityPending(_appDb, "john@example.com", "shared-mail");
+
+        Assert.Empty(MailboxRegistry.GetCapabilities(_appDb, "john@example.com"));
+        Assert.Contains("shared-mail",
+            MailboxRegistry.GetPendingCapabilities(_appDb, "john@example.com"));
+    }
 }

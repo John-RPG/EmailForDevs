@@ -2088,10 +2088,15 @@ public partial class MainWindow : Window
                             StringComparison.OrdinalIgnoreCase)));
                     if (missing && MailboxRegistry.HasCapability(_appDb!, accountUpn, capability.Id))
                     {
-                        MailboxRegistry.SetCapability(_appDb!, accountUpn, capability.Id, false);
+                        // Demoted to pending rather than cleared. The scopes are
+                        // genuinely absent, so the feature must stay off — but
+                        // the user did ask for this, and an approval that has not
+                        // arrived yet is not a refusal. Clearing it outright is
+                        // what made a granted request look like it never saved.
+                        MailboxRegistry.SetCapabilityPending(_appDb!, accountUpn, capability.Id);
                         Log(LogLevel.Warning,
-                            $"{accountUpn}: \"{capability.Name}\" was recorded but its permission " +
-                            "was never granted — turning it off. Re-enable it in Settings to request it again.");
+                            $"{accountUpn}: \"{capability.Name}\" is still waiting on its permission " +
+                            "— it stays requested, and will switch on once approval comes through.");
                     }
                 }
             }

@@ -17,7 +17,26 @@ public static class AppDatabase
         return conn;
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4, V5, V6, V7, V8];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4, V5, V6, V7, V8, V9];
+
+    const string V9 = """
+        -- A capability can be asked for without being granted yet: in a tenant
+        -- that requires administrator approval, consent goes to the admin and
+        -- the app learns nothing at the time. Previously that was indistinguishable
+        -- from a refusal, so the toggles snapped back off and the user had to set
+        -- them all again after approval arrived.
+        --
+        -- requested_at records what was asked for; granted_at stays the record of
+        -- what actually came back. A row with a request and no grant is pending.
+        ALTER TABLE account_capabilities ADD COLUMN requested_at INTEGER NOT NULL DEFAULT 0;
+
+        -- Existing rows were only ever written on a real grant, so they are not
+        -- pending; mark them as requested at the same moment for consistency.
+        UPDATE account_capabilities SET requested_at = granted_at;
+
+        -- granted_at becomes nullable in meaning rather than in type: 0 records
+        -- "asked for, not granted". No existing row carries 0, so nothing moves.
+        """;
 
     const string V8 = """
         -- Accounts are ordered as units, so the folder tree can be arranged the

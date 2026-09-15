@@ -47,6 +47,13 @@ public partial class CapabilitiesWindow : Window
         /// <summary>Whether the tenant has actually granted this, as opposed to it being asked for.</summary>
         public bool Granted { get; set; }
 
+        /// <summary>
+        /// Asked for, but the grant has not come back — typically waiting on an
+        /// administrator. Kept apart from Granted so the feature stays off while
+        /// the user's choice stays on.
+        /// </summary>
+        public bool Pending { get; set; }
+
         public string ScopeText => Capability.Scopes.Count == 0
             ? "no additional permission — gated because it is destructive"
             : string.Join("  ", Capability.ShortScopes);
@@ -58,6 +65,8 @@ public partial class CapabilitiesWindow : Window
             Capability.LikelyNeedsAdmin ? Visibility.Visible : Visibility.Collapsed;
         public Visibility GrantedVisibility =>
             Granted ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility PendingVisibility =>
+            Pending && !Granted ? Visibility.Visible : Visibility.Collapsed;
         public Visibility RiskVisibility =>
             Capability.Risk is CapabilityRisk.Normal ? Visibility.Collapsed : Visibility.Visible;
 
@@ -134,16 +143,25 @@ public partial class CapabilitiesWindow : Window
         if (SelectedAccount is not string account) return;
 
         var granted = MailboxRegistry.GetCapabilities(_appDb, account);
+        // Requests still awaiting approval come back switched on, so a selection
+        // survives closing the app while an administrator considers it.
+        var pending = MailboxRegistry.GetPendingCapabilities(_appDb, account);
         foreach (var capability in AccountCapability.All)
+        {
+            var isGranted = capability.Required || granted.Contains(capability.Id);
+            var isPending = !isGranted && pending.Contains(capability.Id);
             _rows.Add(new CapabilityRow
             {
                 Capability = capability,
-                Enabled = capability.Required || granted.Contains(capability.Id),
-                Granted = capability.Required || granted.Contains(capability.Id),
+                Enabled = isGranted || isPending,
+                Granted = isGranted,
+                Pending = isPending,
             });
+        }
 
         var optional = _rows.Count(r => r.CanToggle);
-        GrantedLabel.Text = $"{granted.Count:N0} of {optional:N0} optional capabilities granted.";
+        GrantedLabel.Text = $"{granted.Count:N0} of {optional:N0} optional capabilities granted." +
+            (pending.Count > 0 ? $" {pending.Count:N0} awaiting approval." : "");
     }
 
     /// <summary>
@@ -198,12 +216,37 @@ public partial class CapabilitiesWindow : Window
             // Record what was granted, not what was asked for: a tenant can
             // approve part of a request, and claiming otherwise would leave
             // features that silently do nothing.
+            //
+            // But a request that was not granted is not the same as one that was
+            // refused. Where the tenant sends consent to an administrator, the
+            // browser says "request sent" and closes, and nothing comes back —
+            // so anything still switched on is kept as pending rather than
+            // switched off. Otherwise approval arrives and the user finds every
+            // toggle reset, with no sign the first attempt did anything.
             foreach (var row in _rows.Where(r => r.CanToggle))
             {
                 var isGranted = granted.Contains(row.Id, StringComparer.OrdinalIgnoreCase);
-                MailboxRegistry.SetCapability(_appDb, account, row.Id, isGranted);
-                row.Granted = isGranted;
-                row.Enabled = isGranted;
+                if (isGranted)
+                {
+                    MailboxRegistry.SetCapability(_appDb, account, row.Id, true);
+                    row.Granted = true;
+                    row.Pending = false;
+                    row.Enabled = true;
+                }
+                else if (row.Enabled)
+                {
+                    MailboxRegistry.SetCapabilityPending(_appDb, account, row.Id);
+                    row.Granted = false;
+                    row.Pending = true;
+                    // Left on: this is what the user asked for, and it is what
+                    // the next Apply re-requests once approval lands.
+                }
+                else
+                {
+                    MailboxRegistry.SetCapability(_appDb, account, row.Id, false);
+                    row.Granted = false;
+                    row.Pending = false;
+                }
             }
 
             var refused = wanted.Where(w =>
@@ -211,9 +254,11 @@ public partial class CapabilitiesWindow : Window
             ChangesApplied = true;
             StatusLabel.Text = refused.Count == 0
                 ? $"All requested capabilities granted for {account}."
-                : $"Granted {granted.Count:N0}. Not granted: " +
+                : $"Granted {granted.Count:N0}. Awaiting approval: " +
                   string.Join(", ", refused.Select(r => AccountCapability.ById(r)?.Name ?? r)) +
-                  " — an administrator may need to approve these.";
+                  ". These stay switched on — once an administrator approves the " +
+                  "request, press \"Apply and sign in\" again to pick them up. " +
+                  "You do not have to choose them again.";
             LoadRows();
         }
         catch (Exception ex)

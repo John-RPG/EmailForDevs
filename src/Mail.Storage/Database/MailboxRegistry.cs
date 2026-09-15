@@ -76,7 +76,12 @@ public static class MailboxRegistry
         cmd.CommandText = """
             SELECT c.capability FROM account_capabilities c
             JOIN accounts a ON a.id = c.account_id
-            WHERE a.upn = @u;
+            WHERE a.upn = @u
+              -- Pending requests are excluded on purpose: granted_at = 0 means
+              -- asked for but not yet approved, and treating that as usable
+              -- would have the app request scopes it does not hold on every
+              -- launch, prompting a browser each time.
+              AND c.granted_at <> 0;
             """;
         cmd.Parameters.AddWithValue("@u", accountUpn);
         var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -92,8 +97,9 @@ public static class MailboxRegistry
         using var cmd = appDb.CreateCommand();
         cmd.CommandText = granted
             ? """
-              INSERT OR REPLACE INTO account_capabilities(account_id, capability, granted_at)
-              SELECT id, @c, unixepoch() FROM accounts WHERE upn = @u;
+              INSERT OR REPLACE INTO account_capabilities(
+                  account_id, capability, granted_at, requested_at)
+              SELECT id, @c, unixepoch(), unixepoch() FROM accounts WHERE upn = @u;
               """
             : """
               DELETE FROM account_capabilities
@@ -103,6 +109,50 @@ public static class MailboxRegistry
         cmd.Parameters.AddWithValue("@c", capability);
         cmd.Parameters.AddWithValue("@u", accountUpn);
         cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Records that a capability was asked for but has not been granted.
+    ///
+    /// The case this exists for: a tenant where consent needs an administrator.
+    /// The browser shows "request sent" and closes, and the app is told nothing —
+    /// which is indistinguishable from a refusal unless the request is kept.
+    /// Without it the toggles snap back off and the whole selection has to be
+    /// made again once approval lands.
+    /// </summary>
+    public static void SetCapabilityPending(
+        SqliteConnection appDb, string accountUpn, string capability)
+    {
+        using var cmd = appDb.CreateCommand();
+        cmd.CommandText = """
+            INSERT OR REPLACE INTO account_capabilities(
+                account_id, capability, granted_at, requested_at)
+            SELECT id, @c, 0, unixepoch() FROM accounts WHERE upn = @u;
+            """;
+        cmd.Parameters.AddWithValue("@c", capability);
+        cmd.Parameters.AddWithValue("@u", accountUpn);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Capabilities asked for whose grant has not arrived — awaiting an
+    /// administrator, or simply never approved. Distinct from
+    /// <see cref="GetCapabilities"/>, which returns only what is actually usable.
+    /// </summary>
+    public static HashSet<string> GetPendingCapabilities(
+        SqliteConnection appDb, string accountUpn)
+    {
+        using var cmd = appDb.CreateCommand();
+        cmd.CommandText = """
+            SELECT capability FROM account_capabilities
+            WHERE granted_at = 0
+              AND account_id = (SELECT id FROM accounts WHERE upn = @u);
+            """;
+        cmd.Parameters.AddWithValue("@u", accountUpn);
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) result.Add(reader.GetString(0));
+        return result;
     }
 
     /// <summary>Whether one capability is granted for this account.</summary>

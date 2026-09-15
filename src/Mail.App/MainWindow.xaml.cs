@@ -2614,8 +2614,20 @@ public partial class MainWindow : Window
             var html = _currentHtml;
             if (html is null)
             {
+                // This wrapper is ours, not the sender's, so it states its own
+                // colours — left unstated it took the browser's dark-mode
+                // default and rendered dark text on a dark page. They follow
+                // the toggle, because there is no sender design to preserve
+                // here and a plain-text message should simply be legible.
                 var text = System.Net.WebUtility.HtmlEncode(BodyText.Text);
-                html = $"<html><body><pre style=\"font-family:Consolas,monospace;white-space:pre-wrap\">{text}</pre></body></html>";
+                var ground = _themeMessageBodies ? ThemeHex("Chrome.Background", "#282C34") : "#ffffff";
+                var ink = _themeMessageBodies ? ThemeHex("Text.Primary", "#ABB2BF") : "#1a1a1a";
+                html =
+                    $"<html><body style=\"background:{ground};color:{ink};margin:8px\">" +
+                    "<pre style=\"font-family:Consolas,monospace;white-space:pre-wrap;" +
+                    "color:inherit;background:transparent\">" +
+                    text +
+                    "</pre></body></html>";
             }
             else
             {
@@ -2623,7 +2635,11 @@ public partial class MainWindow : Window
                 if (html.Length > PreviewHtmlCap)
                     html = html[..PreviewHtmlCap];
             }
-            if (_themeMessageBodies) html = ApplyThemeToHtml(html);
+            // Only a real message body is restyled. The plain-text wrapper above
+            // already carries the right colours for the current mode, and running
+            // it through again would fight its own inline style.
+            if (_currentHtml is not null)
+                html = _themeMessageBodies ? ApplyThemeToHtml(html) : WithReadableDefaults(html);
             PreviewView.CoreWebView2.NavigateToString(html);
         }
         catch (Exception ex)
@@ -2635,6 +2651,27 @@ public partial class MainWindow : Window
 
     /// <summary>Whether the reading pane is currently restyling message bodies.</summary>
     bool _themeMessageBodies;
+
+    /// <summary>
+    /// Supplies a white ground and dark text for a message that states neither.
+    ///
+    /// "Show as sent" cannot mean "show with no colours at all". Mail is written
+    /// on the assumption of a white page, so a sender who sets a dark text colour
+    /// and no background is relying on that — and a browser in dark mode renders
+    /// them dark-on-dark. A plain-text message is worse still: the wrapper here
+    /// declares nothing, so it inherited the browser default entirely.
+    ///
+    /// Zero-specificity, like the theming path, so anything the message does
+    /// declare still wins. This only fills the gap the sender left.
+    /// </summary>
+    static string WithReadableDefaults(string html)
+    {
+        const string css =
+            "<style id=\"eeemail-base\">" +
+            ":where(html,body){background:#ffffff;color:#1a1a1a;}" +
+            "</style>";
+        return InjectStyle(html, css);
+    }
 
     /// <summary>
     /// Restyles a message body to match the app theme.
@@ -2678,8 +2715,16 @@ public partial class MainWindow : Window
             $"{{background-color:{background} !important;}}" +
             $"</style>";
 
-        // Into <head> when there is one, otherwise in front of everything: an
-        // email body is frequently a fragment rather than a whole document.
+        return InjectStyle(html, css);
+    }
+
+    /// <summary>
+    /// Puts a style block into <c>&lt;head&gt;</c> when the message has one, and
+    /// in front of everything when it does not — an email body is frequently a
+    /// fragment rather than a whole document.
+    /// </summary>
+    static string InjectStyle(string html, string css)
+    {
         var headEnd = html.IndexOf("</head>", StringComparison.OrdinalIgnoreCase);
         return headEnd >= 0
             ? html[..headEnd] + css + html[headEnd..]
@@ -2730,6 +2775,14 @@ public partial class MainWindow : Window
         settings.IsGeneralAutofillEnabled = false;
         settings.IsStatusBarEnabled = false;
         settings.AreDefaultContextMenusEnabled = false;
+
+        // Pinned white rather than left to WebView2, which otherwise follows
+        // Windows' dark mode and paints the page dark. Mail is overwhelmingly
+        // written for a white ground, so a message that sets a text colour but
+        // no background — very common — became dark grey on dark grey and was
+        // unreadable. "As sent" means as the sender intended it to look, which
+        // is on white; restyling to the app theme is what the toggle is for.
+        PreviewView.DefaultBackgroundColor = System.Drawing.Color.White;
 
         core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
         core.WebResourceRequested += (_, args) =>

@@ -29,8 +29,8 @@
     <!-- The single source of truth for the running version. The updater
          compares this against the latest GitHub release tag, so a release must
          bump it here or the new build will not recognise itself as newer. -->
-    <Version>0.1.4</Version>
-    <InformationalVersion>0.1.4</InformationalVersion>
+    <Version>0.1.5</Version>
+    <InformationalVersion>0.1.5</InformationalVersion>
     <Product>eeeMail</Product>
     <Company>John Hadlow</Company>
   </PropertyGroup>

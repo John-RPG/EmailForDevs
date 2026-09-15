@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Documents;
 using System.Windows.Media;
 using Mail.Core.Themes;
 
@@ -25,8 +26,25 @@ public static class ThemeManager
     /// <summary>True when the effective theme is dark, after resolving System.</summary>
     public static bool IsDark { get; private set; }
 
+    /// <summary>Set once, so windows opened later are themed as they load.</summary>
+    static bool _hooked;
+
     public static void Apply(Theme theme)
     {
+        if (!_hooked)
+        {
+            _hooked = true;
+            // Every window, including ones created long after this call. Loaded
+            // rather than Initialized so a window's own XAML values are already
+            // in place and can take precedence.
+            EventManager.RegisterClassHandler(
+                typeof(Window), FrameworkElement.LoadedEvent,
+                new RoutedEventHandler((sender, _) =>
+                {
+                    if (sender is Window window) { ApplyChrome(window); ApplyTitleBar(window); }
+                }));
+        }
+
         Current = theme;
         IsDark = theme switch
         {
@@ -66,7 +84,32 @@ public static class ThemeManager
         }
 
         foreach (var window in Application.Current.Windows.OfType<Window>())
+        {
+            ApplyChrome(window);
             ApplyTitleBar(window);
+        }
+    }
+
+    /// <summary>
+    /// Paints a window's own surface and default text colour.
+    ///
+    /// Needed because an implicit <c>Style TargetType="Window"</c> does not reach
+    /// a derived window class, and every window here is one — so the styles in
+    /// ControlStyles.xaml silently missed all of them, leaving grey-on-grey text
+    /// on the system default background. Applied per window instead, and only
+    /// where the window has not set its own, so a deliberate choice still wins.
+    /// </summary>
+    public static void ApplyChrome(Window window)
+    {
+        if (window.ReadLocalValue(Window.BackgroundProperty) == DependencyProperty.UnsetValue)
+            window.SetResourceReference(Window.BackgroundProperty, "Chrome.Background");
+        if (window.ReadLocalValue(Window.ForegroundProperty) == DependencyProperty.UnsetValue)
+            window.SetResourceReference(Window.ForegroundProperty, "Text.Primary");
+
+        // TextBlock ignores inherited Foreground from a Window, so controls that
+        // render text through one need the default set on the text element too.
+        if (window.ReadLocalValue(TextElement.ForegroundProperty) == DependencyProperty.UnsetValue)
+            window.SetResourceReference(TextElement.ForegroundProperty, "Text.Primary");
     }
 
     /// <summary>

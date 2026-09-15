@@ -1,0 +1,68 @@
+﻿<Window x:Class="Mail.App.RecoveryCodeWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Save your recovery code" Height="470" Width="560" FontSize="12"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Background="{DynamicResource Chrome.Background}"
+        Foreground="{DynamicResource Text.Primary}">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" FontSize="17" FontWeight="SemiBold" TextWrapping="Wrap"
+                   Text="A new encrypted profile has been created"/>
+
+        <TextBlock Grid.Row="1" TextWrapping="Wrap" Margin="0,8,0,12"
+                   Foreground="{DynamicResource Text.Secondary}"
+                   Text="Your mail is encrypted with a key that Windows unlocks for your account automatically. This code is the only other way in. You will need it if that protection stops working — after a Windows profile reset, or on a new machine."/>
+
+        <!-- Selectable, not a label. A code you can only read off the screen is
+             a code that gets written down wrongly or not at all. -->
+        <Border Grid.Row="2" Background="{DynamicResource Chrome.Alt}"
+                BorderBrush="{DynamicResource Accent}" BorderThickness="1"
+                Padding="12,10">
+            <TextBox x:Name="CodeBox" IsReadOnly="True" BorderThickness="0"
+                     Background="Transparent" Foreground="{DynamicResource Text.Primary}"
+                     FontFamily="Consolas" FontSize="16" TextAlignment="Center"
+                     IsReadOnlyCaretVisible="True"
+                     AutomationProperties.Name="Recovery code"
+                     AutomationProperties.AutomationId="recovery-code"/>
+        </Border>
+
+        <DockPanel Grid.Row="3" Margin="0,10,0,0">
+            <Button x:Name="CopyButton" DockPanel.Dock="Left" Content="Copy to clipboard"
+                    Padding="12,4" Click="OnCopy"
+                    AutomationProperties.AutomationId="recovery-copy"/>
+            <Button x:Name="SaveButton" DockPanel.Dock="Left" Content="Save to a file…"
+                    Padding="12,4" Margin="8,0,0,0" Click="OnSave"
+                    AutomationProperties.AutomationId="recovery-save"/>
+            <TextBlock x:Name="ActionResult" VerticalAlignment="Center" Margin="10,0,0,0"
+                       Foreground="{DynamicResource Status.Good}"/>
+        </DockPanel>
+
+        <TextBlock Grid.Row="4" TextWrapping="Wrap" VerticalAlignment="Top" Margin="0,16,0,0"
+                   Foreground="{DynamicResource Text.Secondary}"
+                   Text="This is shown once. It is not stored anywhere you can read it back, so the app cannot show it to you again later. Keep it somewhere you would keep a password."/>
+
+        <DockPanel Grid.Row="5" Margin="0,12,0,0">
+            <!-- Checked/Unchecked rather than Click: Click does not fire when the
+                 box is toggled through the automation pattern, which is also how
+                 a screen reader flips it. -->
+            <CheckBox x:Name="SavedBox" DockPanel.Dock="Left" VerticalAlignment="Center"
+                      Content="I have saved this code"
+                      Checked="OnSavedChanged" Unchecked="OnSavedChanged"
+                      AutomationProperties.AutomationId="recovery-confirm"/>
+            <Button x:Name="CloseButton" DockPanel.Dock="Right" Content="Continue"
+                    Padding="18,4" IsDefault="True" IsEnabled="False" Click="OnClose"
+                    AutomationProperties.AutomationId="recovery-continue"/>
+            <TextBlock/>
+        </DockPanel>
+    </Grid>
+</Window>

@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -159,7 +159,8 @@ public partial class MainWindow : Window
     ICollectionView? _logView;
     System.Windows.Threading.DispatcherTimer? _autoSyncTimer;
     SqliteConnection? _appDb;
-    string? _scratchRoot;
+    /// <summary>Root of the user's data: profile, mailbox databases, caches.</summary>
+    string? _dataDir;
     bool _webViewReady;
     string? _currentHtml;
     MailboxHandle? _currentMailbox;
@@ -427,7 +428,7 @@ public partial class MainWindow : Window
         try
         {
             var auth = new GraphAuthenticator(
-                Path.Combine(_scratchRoot!, "msal.cache"),
+                Path.Combine(_dataDir!, "msal.cache"),
                 () => new WindowInteropHelper(this).Handle);
             var accounts = await auth.GetAccountsAsync();
             var account = accounts.FirstOrDefault(a =>
@@ -561,7 +562,7 @@ public partial class MainWindow : Window
         Log("Layout reset. Pane sizes return to their defaults on restart.");
     }
 
-    string LayoutFile => Path.Combine(_scratchRoot ?? ".", "profile", "layout.xml");
+    string LayoutFile => Path.Combine(_dataDir ?? ".", "profile", "layout.xml");
 
     /// <summary>
     /// Saves the pane arrangement. The point of docking is arranging things
@@ -656,7 +657,7 @@ public partial class MainWindow : Window
 
     /// <summary>Where the download is staged. Under the profile, not the system temp.</summary>
     string UpdateStagingDirectory =>
-        Path.Combine(_scratchRoot ?? ".", "profile", "update");
+        Path.Combine(_dataDir ?? ".", "profile", "update");
 
     /// <summary>
     /// Looks for a newer release. Quiet by default: a launch check that cannot
@@ -764,22 +765,79 @@ public partial class MainWindow : Window
     {
         try
         {
-            _scratchRoot = FindScratchRoot()
-                ?? throw new InvalidOperationException(
-                    "No dev profile found. Run `dotnet run --project tools/SyncSmoke` first.");
-            var repoRoot = Path.GetDirectoryName(_scratchRoot)!;
-            var keyStore = new ProfileKeyStore(Path.Combine(_scratchRoot, "profile"));
-            var masterKey = keyStore.Unlock();
-            _appDb = AppDatabase.Open(Path.Combine(_scratchRoot, "profile", "app.db"), masterKey);
-            _settings = new SettingsStore(_appDb);
-            _drafts = new DraftStore(_appDb);
+            // Before any window opens. The theme brushes are DynamicResource, so
+            // a dialog shown before the dictionary is merged resolves nothing and
+            // renders black text on a black ground. With no settings yet this
+            // follows Windows, which is the right default anyway.
             ApplyTheme();
 
-            LoadMailboxHandles(repoRoot);
+            _dataDir = Mail.Core.Storage.DataLocation.ResolveWithoutCreating(
+                AppContext.BaseDirectory);
+
+            // Nothing exists yet, so ask where it should go before building it.
+            // These two locations are the ones that hurt to change later: moving
+            // them afterwards points the app somewhere new and leaves the old
+            // data behind, so the question belongs here.
+            var firstRun = !new ProfileKeyStore(
+                Mail.Core.Storage.DataLocation.ProfileDirectory(_dataDir)).Exists;
+            string? chosenMailDirectory = null;
+            var checkUpdates = true;
+            if (firstRun)
+            {
+                var setup = new FirstRunWindow(_dataDir);
+                setup.ShowDialog();
+                // Closing the window rather than continuing means "not now":
+                // starting anyway would create the very thing they declined.
+                if (!setup.Completed)
+                {
+                    Log("Setup cancelled; nothing was created.");
+                    StatusText.Text = "Setup was not completed.";
+                    Application.Current.Shutdown();
+                    return;
+                }
+                _dataDir = setup.DataDirectory;
+                chosenMailDirectory = setup.MailDirectory;
+                checkUpdates = setup.CheckForUpdates;
+            }
+
+            var profileDir = Mail.Core.Storage.DataLocation.ProfileDirectory(_dataDir);
+            Directory.CreateDirectory(profileDir);
+            var keyStore = new ProfileKeyStore(profileDir);
+            var masterKey = keyStore.Exists ? keyStore.Unlock() : CreateProfile(keyStore);
+            _appDb = AppDatabase.Open(Path.Combine(profileDir, "app.db"), masterKey);
+            _settings = new SettingsStore(_appDb);
+            _drafts = new DraftStore(_appDb);
+
+            if (firstRun)
+            {
+                // Recorded now the settings store exists. The data directory
+                // itself is written to the marker instead, because a setting
+                // that says where the settings live cannot be read from there.
+                PersistDataDirectory(_dataDir);
+                if (chosenMailDirectory is { Length: > 0 })
+                    _settings.Set(SettingsCatalog.MailboxDirectory.Key,
+                        SettingTarget.Application, chosenMailDirectory);
+                _settings.Set(SettingsCatalog.CheckForUpdates.Key,
+                    SettingTarget.Application, checkUpdates ? "true" : "false");
+            }
+
+            ApplyTheme();
+
+            LoadMailboxHandles(_dataDir);
             LoadFavourites();
             BuildTree();
             StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
             Log($"Profile opened: {_mailboxes.Count} mailbox(es).");
+
+            // No accounts means there is nothing to show and nothing to do, so
+            // go straight to where one is added rather than presenting an empty
+            // window with no hint about what to do next.
+            if (MailboxRegistry.ListAccounts(_appDb).Count == 0)
+            {
+                Log("No accounts configured; opening settings.");
+                Dispatcher.BeginInvoke(() => OnSettingsClick(this, new RoutedEventArgs()),
+                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            }
         }
         catch (Exception ex)
         {
@@ -789,13 +847,87 @@ public partial class MainWindow : Window
         }
     }
 
-    static string? FindScratchRoot()
+    /// <summary>
+    /// Records a non-default data directory beside the executable, which is the
+    /// only place it can go: the setting that describes where the settings live
+    /// cannot itself be read out of them. Choosing the default writes nothing,
+    /// so a default install stays free of stray files.
+    /// </summary>
+    void PersistDataDirectory(string chosen)
     {
-        foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
-            for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
-                if (Directory.Exists(Path.Combine(dir.FullName, ".scratch", "profile")))
-                    return Path.Combine(dir.FullName, ".scratch");
-        return null;
+        var standard = Mail.Core.Storage.DataLocation.ResolveWithoutCreating(
+            AppContext.BaseDirectory);
+        if (string.Equals(Path.GetFullPath(chosen), Path.GetFullPath(standard),
+                StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var marker = Path.Combine(
+            AppContext.BaseDirectory, Mail.Core.Storage.DataLocation.PortableMarker);
+        try
+        {
+            File.WriteAllText(marker, System.Text.Json.JsonSerializer.Serialize(
+                new { dataDirectory = chosen },
+                new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+            Log($"Data directory set to {chosen}.");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Installed under Program Files without write access, say. The app
+            // still works this session; it would just forget the choice, so say
+            // so rather than failing silently.
+            Log(LogLevel.Warning,
+                $"Could not record the data directory next to the app: {ex.Message}");
+            MessageBox.Show(this,
+                $"eeeMail will use {chosen} for this session, but could not save that " +
+                $"choice next to the program:\n\n{ex.Message}\n\n" +
+                $"Set the {Mail.Core.Storage.DataLocation.EnvironmentVariable} environment " +
+                "variable to make it stick.",
+                "eeeMail", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>
+    /// Where mail, settings and caches live. Defaults to %APPDATA%\eeeMail; see
+    /// <see cref="Mail.Core.Storage.DataLocation"/> for the overrides.
+    /// </summary>
+    static string FindDataDirectory() =>
+        Mail.Core.Storage.DataLocation.Resolve(AppContext.BaseDirectory);
+
+    /// <summary>
+    /// Where a newly added mailbox's database is created. The setting when one
+    /// is given, otherwise "mailboxes" under the data directory. Existing
+    /// mailboxes keep the path recorded against them, so changing this affects
+    /// only what is added afterwards.
+    /// </summary>
+    string NewMailboxDirectory()
+    {
+        var configured = _settings?.GetString(
+            SettingsCatalog.MailboxDirectory, SettingTarget.Application);
+        var directory = string.IsNullOrWhiteSpace(configured)
+            ? Mail.Core.Storage.DataLocation.MailboxDirectory(_dataDir!)
+            : Path.GetFullPath(Path.Combine(_dataDir!, configured));
+        Directory.CreateDirectory(directory);
+        return directory;
+    }
+
+    /// <summary>
+    /// Creates the profile keys on first run and shows the recovery code.
+    ///
+    /// The code is displayed rather than merely generated because this is the
+    /// only time it can be: it is not stored anywhere in recoverable form, and
+    /// it is the only way back into the mail store if Windows cannot unprotect
+    /// the master key — after a profile reset, or on a reinstalled machine.
+    /// </summary>
+    byte[] CreateProfile(ProfileKeyStore keyStore)
+    {
+        var created = keyStore.Create();
+        Log("Created a new profile.");
+
+        // A window rather than a MessageBox: the code cannot be shown again, and
+        // a MessageBox offers no way to copy it out.
+        new RecoveryCodeWindow(created.RecoveryCode) { Owner = this }.ShowDialog();
+
+        return created.MasterKey;
     }
 
     void CloseAll()
@@ -1837,7 +1969,7 @@ public partial class MainWindow : Window
     async Task<string> GetAccessTokenAsync(MailboxHandle mailbox)
     {
         var auth = new GraphAuthenticator(
-            Path.Combine(_scratchRoot!, "msal.cache"),
+            Path.Combine(_dataDir!, "msal.cache"),
             () => new WindowInteropHelper(this).Handle);
         var accountUpn = mailbox.AccountUpn.Length > 0 ? mailbox.AccountUpn : mailbox.Upn;
         var accounts = await auth.GetAccountsAsync();
@@ -1866,7 +1998,7 @@ public partial class MainWindow : Window
         if (_graphClients.TryGetValue(accountUpn, out var cached))
             return cached;
         var auth = new GraphAuthenticator(
-            Path.Combine(_scratchRoot!, "msal.cache"),
+            Path.Combine(_dataDir!, "msal.cache"),
             () => new WindowInteropHelper(this).Handle);
         // Ask for exactly the scopes this account consented to: requesting more
         // than was granted cannot be satisfied from cache, and would drag every
@@ -2519,7 +2651,7 @@ public partial class MainWindow : Window
     {
         if (_webViewReady)
             return;
-        var dataDir = Path.Combine(_scratchRoot ?? Path.GetTempPath(), "webview2");
+        var dataDir = Path.Combine(_dataDir ?? Path.GetTempPath(), "webview2");
         var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: dataDir);
         await PreviewView.EnsureCoreWebView2Async(environment);
 
@@ -2882,14 +3014,13 @@ public partial class MainWindow : Window
     /// </summary>
     void OnSettingsClick(object sender, RoutedEventArgs e)
     {
-        if (_appDb is null || _scratchRoot is null) return;
-        var repoRoot = Path.GetDirectoryName(_scratchRoot)!;
+        if (_appDb is null || _dataDir is null) return;
         var window = new SettingsWindow(_appDb)
         {
             Owner = this,
             AddAccount = AddAccountInteractiveAsync,
             Capabilities = accountUpn => ShowCapabilities(accountUpn),
-            AddSharedMailbox = accountUpn => ShowSharedMailboxPicker(repoRoot, accountUpn),
+            AddSharedMailbox = accountUpn => ShowSharedMailboxPicker(_dataDir, accountUpn),
         };
         window.ShowDialog();
         if (!window.ChangesApplied)
@@ -2915,8 +3046,7 @@ public partial class MainWindow : Window
     /// </summary>
     void ReconcileMailboxes()
     {
-        if (_appDb is null || _scratchRoot is null) return;
-        var repoRoot = Path.GetDirectoryName(_scratchRoot)!;
+        if (_appDb is null || _dataDir is null) return;
         var registry = MailboxRegistry.List(_appDb, enabledOnly: true);
 
         var wanted = registry.Select(e => e.Upn).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -2936,7 +3066,7 @@ public partial class MainWindow : Window
         {
             var dbPath = Path.IsPathRooted(entry.DbPath)
                 ? entry.DbPath
-                : Path.Combine(repoRoot, entry.DbPath);
+                : Path.Combine(_dataDir, entry.DbPath);
             try
             {
                 var handle = new MailboxHandle(
@@ -2977,11 +3107,11 @@ public partial class MainWindow : Window
     /// <summary>Signs a new account in and registers its mailbox.</summary>
     async Task<string> AddAccountInteractiveAsync()
     {
-        if (_appDb is null || _scratchRoot is null) return "";
+        if (_appDb is null || _dataDir is null) return "";
         try
         {
             var auth = new GraphAuthenticator(
-                Path.Combine(_scratchRoot, "msal.cache"),
+                Path.Combine(_dataDir, "msal.cache"),
                 () => new WindowInteropHelper(this).Handle);
             Log(LogLevel.Info,
                 "Sign-in needed to add an account: a browser window will open. " +
@@ -2997,7 +3127,7 @@ public partial class MainWindow : Window
             }
 
             MailboxRegistry.AddAccountWithMailbox(
-                _appDb, upn, Path.Combine(_scratchRoot, "mailboxes"));
+                _appDb, upn, NewMailboxDirectory());
             Log($"Added account {upn}.");
             return upn;
         }
@@ -3019,11 +3149,11 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    bool ShowSharedMailboxPicker(string repoRoot, string accountUpn)
+    bool ShowSharedMailboxPicker(string dataDirectory, string accountUpn)
     {
         if (_appDb is null) return false;
         var picker = new SharedMailboxWindow(
-            _appDb, repoRoot, GetGraphForAccountAsync, GetMappedMailboxesAsync, accountUpn)
+            _appDb, dataDirectory, GetGraphForAccountAsync, GetMappedMailboxesAsync, accountUpn)
         {
             Owner = Application.Current.Windows.OfType<SettingsWindow>().FirstOrDefault() ?? (Window)this,
         };
@@ -3043,7 +3173,7 @@ public partial class MainWindow : Window
         string accountUpn, IReadOnlyList<string> wanted)
     {
         var auth = new GraphAuthenticator(
-            Path.Combine(_scratchRoot!, "msal.cache"),
+            Path.Combine(_dataDir!, "msal.cache"),
             () => new WindowInteropHelper(this).Handle);
         var granted = new List<string>();
 
@@ -3133,7 +3263,7 @@ public partial class MainWindow : Window
         try
         {
             var auth = new GraphAuthenticator(
-                Path.Combine(_scratchRoot!, "msal.cache"),
+                Path.Combine(_dataDir!, "msal.cache"),
                 () => new WindowInteropHelper(this).Handle);
             var accounts = await auth.GetAccountsAsync();
             var account = accounts.FirstOrDefault(a =>
@@ -3177,9 +3307,9 @@ public partial class MainWindow : Window
     /// <summary>Re-reads the mailbox registry (after config changes) and rebuilds the tree.</summary>
     void ReloadMailboxes()
     {
-        if (_appDb is null || _scratchRoot is null)
+        if (_appDb is null || _dataDir is null)
             return;
-        LoadMailboxHandles(Path.GetDirectoryName(_scratchRoot)!);
+        LoadMailboxHandles(_dataDir);
         BuildTree();
         StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
     }
@@ -3189,13 +3319,13 @@ public partial class MainWindow : Window
     /// this: when they were separate queries the reload path silently dropped the
     /// owning account, which a shared mailbox needs in order to authenticate.
     /// </summary>
-    void LoadMailboxHandles(string repoRoot)
+    void LoadMailboxHandles(string dataDirectory)
     {
         foreach (var entry in MailboxRegistry.List(_appDb!, enabledOnly: true))
         {
             var dbPath = Path.IsPathRooted(entry.DbPath)
                 ? entry.DbPath
-                : Path.Combine(repoRoot, entry.DbPath);
+                : Path.Combine(_dataDir, entry.DbPath);
             _mailboxes.Add(new MailboxHandle(
                 entry.Upn, dbPath, entry.Dek, entry.WindowMonths, entry.Policy,
                 MailboxDatabase.Open(dbPath, entry.Dek))
@@ -3211,7 +3341,7 @@ public partial class MainWindow : Window
 
     async void StartSync()
     {
-        if (_scratchRoot is null || _mailboxes.Count == 0)
+        if (_dataDir is null || _mailboxes.Count == 0)
             return;
 
         // Fan out: each mailbox syncs on its own, so adding one starts it
@@ -3227,7 +3357,7 @@ public partial class MainWindow : Window
     /// </summary>
     async Task SyncMailboxAsync(MailboxHandle mailbox)
     {
-        if (_scratchRoot is null) return;
+        if (_dataDir is null) return;
         lock (_syncing)
         {
             if (!_syncing.Add(mailbox.Upn)) return;

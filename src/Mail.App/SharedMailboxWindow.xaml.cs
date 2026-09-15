@@ -54,7 +54,10 @@ public partial class SharedMailboxWindow : Window
     }
 
     readonly SqliteConnection _appDb;
-    readonly string _repoRoot;
+    /// <summary>Where mailbox databases are created. The profile root, not the
+    /// repo: an installed copy has no repo, so deriving one .scratch deeper
+    /// would nest a stray directory under the user's application data.</summary>
+    readonly string _profileRoot;
     readonly Func<string, Task<GraphServiceClient>> _graphForAccount;
     readonly Func<string, Task<IReadOnlyList<AutodiscoverMailboxes.AlternateMailbox>>>? _mapped;
 
@@ -67,14 +70,14 @@ public partial class SharedMailboxWindow : Window
     public bool MailboxesAdded { get; private set; }
 
     public SharedMailboxWindow(
-        SqliteConnection appDb, string repoRoot,
+        SqliteConnection appDb, string profileRoot,
         Func<string, Task<GraphServiceClient>> graphForAccount,
         Func<string, Task<IReadOnlyList<AutodiscoverMailboxes.AlternateMailbox>>>? mappedMailboxes = null,
         string? initialAccount = null)
     {
         InitializeComponent();
         _appDb = appDb;
-        _repoRoot = repoRoot;
+        _profileRoot = profileRoot;
         _graphForAccount = graphForAccount;
         _mapped = mappedMailboxes;
         _initialAccount = initialAccount;
@@ -280,7 +283,7 @@ public partial class SharedMailboxWindow : Window
             string.Equals(c.Address, address, StringComparison.OrdinalIgnoreCase))?.DisplayName ?? address;
         MailboxRegistry.AddShared(
             _appDb, owner.AccountId, owner.Upn, address, name,
-            Path.Combine(_repoRoot, ".scratch", "mailboxes"));
+            Path.Combine(_profileRoot, "mailboxes"));
 
         MailboxesAdded = true;
         AddButton.IsEnabled = false;

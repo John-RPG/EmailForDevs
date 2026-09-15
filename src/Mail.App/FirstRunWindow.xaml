@@ -1,0 +1,87 @@
+﻿<Window x:Class="Mail.App.FirstRunWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Set up eeeMail" Height="580" Width="660" FontSize="12"
+        WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
+        Background="{DynamicResource Chrome.Background}"
+        Foreground="{DynamicResource Text.Primary}">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+            <TextBlock FontSize="19" FontWeight="SemiBold" Text="Welcome to eeeMail"/>
+            <TextBlock TextWrapping="Wrap" Margin="0,6,0,0"
+                       Foreground="{DynamicResource Text.Secondary}"
+                       Text="Nothing has been created yet. Choose where things should go — you can change any of this later in Settings, though moving existing mail is a manual job, so it is worth getting right now."/>
+        </StackPanel>
+
+        <!-- Profile and app database. -->
+        <StackPanel Grid.Row="1" Margin="0,0,0,14">
+            <TextBlock FontWeight="SemiBold" Text="Profile and settings"/>
+            <TextBlock TextWrapping="Wrap" Margin="0,2,0,6"
+                       Foreground="{DynamicResource Text.Secondary}"
+                       Text="Holds the encrypted settings database and the key that unlocks your mail."/>
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="Browse…" Padding="12,3" Margin="8,0,0,0"
+                        Click="OnBrowseData"
+                        AutomationProperties.AutomationId="setup-browse-data"/>
+                <TextBox x:Name="DataDirBox" VerticalContentAlignment="Center" Padding="6,4"
+                         TextChanged="OnPathChanged"
+                         AutomationProperties.Name="Profile directory"
+                         AutomationProperties.AutomationId="setup-data-dir"/>
+            </DockPanel>
+        </StackPanel>
+
+        <!-- Mailbox databases, which are the big ones. -->
+        <StackPanel Grid.Row="2" Margin="0,0,0,14">
+            <TextBlock FontWeight="SemiBold" Text="Mail databases"/>
+            <TextBlock TextWrapping="Wrap" Margin="0,2,0,6"
+                       Foreground="{DynamicResource Text.Secondary}"
+                       Text="One encrypted database per mailbox. These are the large files — a full mirror of a busy mailbox can run to several gigabytes — so a roomier drive may suit them better."/>
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="Browse…" Padding="12,3" Margin="8,0,0,0"
+                        Click="OnBrowseMail"
+                        AutomationProperties.AutomationId="setup-browse-mail"/>
+                <TextBox x:Name="MailDirBox" VerticalContentAlignment="Center" Padding="6,4"
+                         TextChanged="OnPathChanged"
+                         AutomationProperties.Name="Mail database directory"
+                         AutomationProperties.AutomationId="setup-mail-dir"/>
+            </DockPanel>
+        </StackPanel>
+
+        <StackPanel Grid.Row="3">
+            <CheckBox x:Name="UpdatesBox" IsChecked="True" Margin="0,0,0,6"
+                      Content="Check for updates on launch"
+                      AutomationProperties.AutomationId="setup-updates"/>
+            <TextBlock TextWrapping="Wrap" Margin="22,0,0,0" FontSize="11"
+                       Foreground="{DynamicResource Text.Secondary}"
+                       Text="Only the check is automatic. Downloads are verified and never installed without asking."/>
+        </StackPanel>
+
+        <TextBlock x:Name="Problem" Grid.Row="4" TextWrapping="Wrap" VerticalAlignment="Bottom"
+                   Margin="0,12,0,0" Foreground="{DynamicResource Risk.Destructive}"/>
+
+        <DockPanel Grid.Row="5" Margin="0,14,0,0">
+            <Button DockPanel.Dock="Left" Content="Use the defaults" Padding="12,5"
+                    Click="OnUseDefaults"
+                    AutomationProperties.AutomationId="setup-defaults"/>
+            <!-- Explicitly a button, never automatic: looking around the disk for
+                 someone's mail without being asked is not the app's business. -->
+            <Button DockPanel.Dock="Left" Content="Find an existing profile…"
+                    Padding="12,5" Margin="8,0,0,0" Click="OnFindExisting"
+                    ToolTip="Look in the usual places for a profile from a previous install."
+                    AutomationProperties.AutomationId="setup-find"/>
+            <Button x:Name="ContinueButton" DockPanel.Dock="Right" Content="Continue"
+                    Padding="20,5" IsDefault="True" Click="OnContinue"
+                    AutomationProperties.AutomationId="setup-continue"/>
+            <TextBlock/>
+        </DockPanel>
+    </Grid>
+</Window>

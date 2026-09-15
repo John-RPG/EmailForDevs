@@ -22,7 +22,13 @@ using Microsoft.Kiota.Abstractions.Authentication;
 // (lets the app do the actual download with its progress UI).
 var months = args.Length > 0 && int.TryParse(args[0], out var m) ? m : 1;
 var configOnly = args.Contains("config", StringComparer.OrdinalIgnoreCase);
-var root = Path.Combine(Directory.GetCurrentDirectory(), ".scratch");
+// A dev tool, so it keeps its store in the checkout rather than in the user's
+// application data — but through the same resolver the app uses, so both agree
+// on one location. EEEMAIL_DATA_DIR overrides it for both.
+var root = Mail.Core.Storage.DataLocation.ResolveWithoutCreating(AppContext.BaseDirectory);
+if (Environment.GetEnvironmentVariable(Mail.Core.Storage.DataLocation.EnvironmentVariable) is null)
+    root = Path.Combine(Directory.GetCurrentDirectory(), ".scratch");
+Directory.CreateDirectory(root);
 var profileDir = Path.Combine(root, "profile");
 
 // --- profile master key (created once; recovery code printed once) ----------
@@ -1623,7 +1629,7 @@ var upn = signIn.Account.Username;
 Console.WriteLine($"Signed in as {upn}");
 
 // --- mailbox registry row + DEK ----------------------------------------------
-var dek = EnsureMailboxRegistered(appDb, upn, out var mailboxDbPath);
+var dek = EnsureMailboxRegistered(appDb, upn, root, out var mailboxDbPath);
 using var mailboxDb = MailboxDatabase.Open(mailboxDbPath, dek);
 
 if (args.Contains("findrecent", StringComparer.OrdinalIgnoreCase))
@@ -1918,7 +1924,7 @@ static object? Scalar(SqliteConnection conn, string sql)
     return cmd.ExecuteScalar();
 }
 
-static byte[] EnsureMailboxRegistered(SqliteConnection appDb, string upn, out string dbPath)
+static byte[] EnsureMailboxRegistered(SqliteConnection appDb, string upn, string root, out string dbPath)
 {
     using (var find = appDb.CreateCommand())
     {
@@ -1932,7 +1938,7 @@ static byte[] EnsureMailboxRegistered(SqliteConnection appDb, string upn, out st
         }
     }
     var dek = RandomNumberGenerator.GetBytes(32);
-    dbPath = Path.Combine(".scratch", "mailboxes", upn + ".db");
+    dbPath = Path.Combine(root, "mailboxes", upn + ".db");
     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dbPath))!);
     using var cmd = appDb.CreateCommand();
     cmd.CommandText = """

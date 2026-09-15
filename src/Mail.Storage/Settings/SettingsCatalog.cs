@@ -394,6 +394,34 @@ public static class SettingsCatalog
                  "hostname, which receiving spam filters treat as a forgery signal.",
         Category: "Composing");
 
+    // ---- storage ------------------------------------------------------------
+
+    public static readonly SettingDefinition DataDirectory = new(
+        "storage.data_directory",
+        "Data directory",
+        "Where the profile, mailbox databases and caches are kept. Empty means " +
+        "the default: %APPDATA%\\eeeMail. Point it at another drive to keep " +
+        "large mailboxes off the system disk, or at a portable path to carry a " +
+        "profile between machines.",
+        SettingKind.String, "",
+        [Application],
+        Risk: SettingRisk.Performance,
+        Warning: "Changing this does not move anything. The app will look for a " +
+                 "profile in the new location and create an empty one if there " +
+                 "is none, leaving the old mail where it is. Move the contents " +
+                 "yourself while the app is closed.",
+        Category: "Storage");
+
+    public static readonly SettingDefinition MailboxDirectory = new(
+        "storage.mailbox_directory",
+        "Mailbox database directory",
+        "Where new mailbox databases are created. Empty means a \"mailboxes\" " +
+        "folder inside the data directory. Existing mailboxes remember their " +
+        "own path and are unaffected.",
+        SettingKind.String, "",
+        [Application],
+        Category: "Storage");
+
     // ---- updates ------------------------------------------------------------
 
     public static readonly SettingDefinition CheckForUpdates = new(
@@ -466,6 +494,7 @@ public static class SettingsCatalog
         SignatureSource, SignatureText, SignatureOnReply,
         ReplyQuoteStyle, ReplyAboveQuote,
         SendDelaySeconds, SaveToSent, RequestReadReceipts, SendReadReceipts,
+        DataDirectory, MailboxDirectory,
         CheckForUpdates, UpdateRepository,
         LogLevel, LogGraphRequests, KeepRawMime,
     ];

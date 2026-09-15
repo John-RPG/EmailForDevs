@@ -406,10 +406,11 @@ public static class SettingsCatalog
         SettingKind.String, "",
         [Application],
         Risk: SettingRisk.Performance,
-        Warning: "Changing this does not move anything. The app will look for a " +
-                 "profile in the new location and create an empty one if there " +
-                 "is none, leaving the old mail where it is. Move the contents " +
-                 "yourself while the app is closed.",
+        Warning: "Takes effect on restart, and moves nothing. The databases are " +
+                 "open while the app runs, so it cannot copy them safely. Close " +
+                 "eeeMail, move the old folder's contents into the new one, then " +
+                 "start it again — starting without moving anything creates a " +
+                 "fresh, empty profile there and leaves your mail behind.",
         Category: "Storage");
 
     public static readonly SettingDefinition MailboxDirectory = new(

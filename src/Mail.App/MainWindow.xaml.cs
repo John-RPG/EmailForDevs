@@ -814,6 +814,10 @@ public partial class MainWindow : Window
                 // itself is written to the marker instead, because a setting
                 // that says where the settings live cannot be read from there.
                 PersistDataDirectory(_dataDir);
+                // Recorded so the settings tree shows where the data actually
+                // is, rather than an empty box the reader has to interpret.
+                _settings.Set(SettingsCatalog.DataDirectory.Key,
+                    SettingTarget.Application, _dataDir);
                 if (chosenMailDirectory is { Length: > 0 })
                     _settings.Set(SettingsCatalog.MailboxDirectory.Key,
                         SettingTarget.Application, chosenMailDirectory);
@@ -845,6 +849,61 @@ public partial class MainWindow : Window
             Log(LogLevel.Error, $"ERROR: {ex.Message}");
             MessageBox.Show(this, ex.Message, "eeeMail", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    /// <summary>
+    /// Acts on a change to <c>storage.data_directory</c>.
+    ///
+    /// The move cannot happen while the app is running — app.db and every
+    /// mailbox database are open from the current location, and copying files
+    /// out from under live SQLite connections is how a store gets corrupted. So
+    /// the new location is recorded and the user is told what to do: close the
+    /// app, move the contents, start it again. Saying that plainly beats either
+    /// silently ignoring the setting or pretending to move the data.
+    /// </summary>
+    void ApplyDataDirectoryChange()
+    {
+        if (_settings is null || _dataDir is null) return;
+        var configured = _settings.GetString(
+            SettingsCatalog.DataDirectory, SettingTarget.Application);
+        if (string.IsNullOrWhiteSpace(configured)) return;
+
+        string target;
+        try
+        {
+            target = Path.GetFullPath(configured);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            Log(LogLevel.Warning, $"Data directory '{configured}' is not a usable path: {ex.Message}");
+            return;
+        }
+        if (string.Equals(target, Path.GetFullPath(_dataDir), StringComparison.OrdinalIgnoreCase))
+        {
+            // Already where it says. Re-record it anyway: the setting and the
+            // marker can drift apart if the marker was lost — reinstalled over,
+            // or the app moved — and leaving that alone would silently send the
+            // next launch to a fresh empty profile.
+            PersistDataDirectory(target);
+            return;
+        }
+
+        PersistDataDirectory(target);
+        Log($"Data directory will be {target} after a restart.");
+
+        var answer = MessageBox.Show(this,
+            $"eeeMail will use this location when it next starts:\n\n{target}\n\n" +
+            $"Your mail is still in:\n\n{_dataDir}\n\n" +
+            "Nothing has been moved. The databases are open right now, so copying " +
+            "them while the app is running would risk corrupting them.\n\n" +
+            "To finish: close eeeMail, move the contents of the old folder into " +
+            "the new one, then start it again. If you start without moving " +
+            "anything, eeeMail will create a fresh, empty profile there.\n\n" +
+            "Close eeeMail now?",
+            "Restart needed to change location",
+            MessageBoxButton.YesNo, MessageBoxImage.Information);
+
+        if (answer == MessageBoxResult.Yes) Close();
     }
 
     /// <summary>
@@ -3030,6 +3089,7 @@ public partial class MainWindow : Window
         // mid-sync to add an unrelated one would throw away its progress, and a
         // new mailbox should not wait for that either.
         Log("Settings changed.");
+        ApplyDataDirectoryChange();
         ApplyTheme();
         ApplyColumnLayout(_openFolder);
         ApplyRowDensity(_openFolder);

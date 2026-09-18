@@ -2930,7 +2930,9 @@ public partial class MainWindow : Window
             return;
         }
         var accounts = _mailboxes.Select(m => m.Upn).ToList();
-        var window = new ComposeWindow(accounts, SendAsync, seed, _drafts, draftId, SignatureFor)
+        var window = new ComposeWindow(
+            accounts, SendAsync, seed, _drafts, draftId, SignatureFor,
+            _settings is null ? null : new SignatureSettings(this))
         {
             Owner = this,
         };
@@ -3022,14 +3024,67 @@ public partial class MainWindow : Window
     /// a thread is what produces the stacked-signature mess at the bottom of
     /// long exchanges.
     /// </summary>
+    /// <summary>
+    /// The scopes a setting is read through for a sending address: the account
+    /// it belongs to first, then the application default.
+    /// </summary>
+    SettingTarget[] ChainFor(string fromAddress)
+    {
+        var mailbox = _mailboxes.FirstOrDefault(m =>
+            string.Equals(m.Upn, fromAddress, StringComparison.OrdinalIgnoreCase));
+        return mailbox is null
+            ? [SettingTarget.Application]
+            : [SettingTarget.Account(mailbox.AccountId), SettingTarget.Application];
+    }
+
+    /// <summary>
+    /// Lets the compose window read and write the signature without handing it
+    /// the settings store, which it has no other business with.
+    /// </summary>
+    sealed class SignatureSettings(MainWindow owner) : ComposeWindow.ISignatureStore
+    {
+        public string? Get(string fromAddress)
+        {
+            var settings = owner._settings;
+            if (settings is null) return null;
+            var text = settings.GetString(
+                SettingsCatalog.SignatureText, owner.ChainFor(fromAddress));
+            return string.IsNullOrWhiteSpace(text) ? null : text;
+        }
+
+        public void Save(string fromAddress, string text)
+        {
+            var settings = owner._settings;
+            if (settings is null) return;
+
+            // Written at the account when there is one: two accounts sharing one
+            // signature is the surprising outcome, not the useful one.
+            var mailbox = owner._mailboxes.FirstOrDefault(m =>
+                string.Equals(m.Upn, fromAddress, StringComparison.OrdinalIgnoreCase));
+            var target = mailbox is null
+                ? SettingTarget.Application
+                : SettingTarget.Account(mailbox.AccountId);
+
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                // Clearing the text means wanting no signature, so turn signing
+                // off too rather than leaving it on with nothing to append.
+                settings.Clear(SettingsCatalog.SignatureText.Key, target);
+                settings.Set(SettingsCatalog.SignatureSource.Key, target, "none");
+                return;
+            }
+
+            settings.Set(SettingsCatalog.SignatureText.Key, target, text);
+            // Storing a signature is the act of asking for one; leaving the
+            // source at "none" would silently ignore what was just written.
+            settings.Set(SettingsCatalog.SignatureSource.Key, target, "local");
+        }
+    }
+
     string? SignatureFor(string fromAddress, bool isReply)
     {
         if (_settings is null || _appDb is null) return null;
-        var mailbox = _mailboxes.FirstOrDefault(m =>
-            string.Equals(m.Upn, fromAddress, StringComparison.OrdinalIgnoreCase));
-        SettingTarget[] chain = mailbox is null
-            ? [SettingTarget.Application]
-            : [SettingTarget.Account(mailbox.AccountId), SettingTarget.Application];
+        var chain = ChainFor(fromAddress);
 
         if (_settings.GetString(SettingsCatalog.SignatureSource, chain) != "local") return null;
         if (isReply && !_settings.GetBool(SettingsCatalog.SignatureOnReply, chain)) return null;

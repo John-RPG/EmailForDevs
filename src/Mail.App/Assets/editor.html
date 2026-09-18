@@ -3,21 +3,41 @@
 <head>
 <meta charset="utf-8">
 <style>
+  /* Two themes, one set of rules. The host flips the attribute on <html>;
+     nothing below hard-codes a colour, so the editor cannot end up with dark
+     text on a dark page. Edited content keeps its own inline colours — those
+     belong to the message and get sent — so dark mode is a view of the page
+     the text sits on, not a rewrite of the text. */
+  :root {
+    --ground: #ffffff; --ink: #1a1a1a;
+    --bar: #f6f6f6; --bar-ink: #1a1a1a;
+    --line: #cccccc; --hover: #e2e2e2; --hover-line: #c8c8c8;
+  }
+  :root[data-theme="dark"] {
+    --ground: #282c34; --ink: #d7dae0;
+    --bar: #21252b; --bar-ink: #d7dae0;
+    --line: #3e4451; --hover: #3e4451; --hover-line: #4b5263;
+  }
   html, body { height: 100%; margin: 0; }
   body { display: flex; flex-direction: column;
-         font-family: "Segoe UI", sans-serif; font-size: 13px; }
-  #bar { flex: 0 0 auto; padding: 4px; border-bottom: 1px solid #ccc;
-         background: #f6f6f6; display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
+         font-family: "Segoe UI", sans-serif; font-size: 13px;
+         background: var(--ground); color: var(--ink); }
+  #bar { flex: 0 0 auto; padding: 4px; border-bottom: 1px solid var(--line);
+         background: var(--bar); color: var(--bar-ink);
+         display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
   #bar button, #bar select {
       font-family: inherit; font-size: 12px; min-width: 26px; height: 24px;
       border: 1px solid transparent; background: transparent; cursor: pointer;
+      color: inherit;
       border-radius: 3px; padding: 0 6px; }
-  #bar button:hover, #bar select:hover { background: #e2e2e2; border-color: #c8c8c8; }
-  #bar .sep { width: 1px; height: 18px; background: #ccc; margin: 0 4px; }
+  #bar select option { background: var(--bar); color: var(--bar-ink); }
+  #bar button:hover, #bar select:hover { background: var(--hover); border-color: var(--hover-line); }
+  #bar .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
   #bar button b, #bar button i, #bar button u, #bar button s { pointer-events: none; }
   #editor { flex: 1 1 auto; padding: 8px; outline: none; overflow-y: auto;
-            font-family: "Segoe UI", sans-serif; font-size: 14px; }
-  #editor blockquote { margin: 0 0 0 0.8ex; border-left: 2px solid #ccc; padding-left: 1ex; }
+            font-family: "Segoe UI", sans-serif; font-size: 14px;
+            background: var(--ground); color: var(--ink); }
+  #editor blockquote { margin: 0 0 0 0.8ex; border-left: 2px solid var(--line); padding-left: 1ex; }
 </style>
 </head>
 <body>
@@ -99,6 +119,16 @@
   // Host bridge: the app reads and writes the body through these.
   window.setBody = html => { editor.innerHTML = html || ''; };
   window.getBody = () => editor.innerHTML;
+
+  // Appends at the end without disturbing what is already written, so an
+  // on-demand signature does not overwrite a part-composed message.
+  window.appendBody = html => { editor.insertAdjacentHTML('beforeend', html || ''); };
+
+  // The only theming entry point. It touches the page chrome, never the
+  // content, so switching themes cannot alter what gets sent.
+  window.setTheme = dark => {
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  };
   window.focusBody = () => {
     editor.focus();
     const range = document.createRange();

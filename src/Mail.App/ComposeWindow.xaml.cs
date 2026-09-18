@@ -34,6 +34,14 @@ public partial class ComposeWindow : Window
     bool _isRich;
     bool _editorReady;
 
+    /// <summary>
+    /// Whether the editor page is dark. Separate from the app theme on purpose:
+    /// the message is written on the recipient's background, not ours, so some
+    /// people want a light editing surface inside a dark app to see what the
+    /// other end will see. It is a view setting and never touches the content.
+    /// </summary>
+    bool _editorDark;
+
     /// <summary>Persists unsent work. Null when the caller wants no saving.</summary>
     readonly DraftStore? _drafts;
 
@@ -42,6 +50,30 @@ public partial class ComposeWindow : Window
     /// is a reply. Owned by the shell, which holds the settings store.
     /// </summary>
     readonly Func<string, bool, string?>? _signature;
+
+    /// <summary>
+    /// Reads and writes the account's stored signature, so one can be defined
+    /// from here instead of sending this message unsigned and going to Settings.
+    /// Null when the shell has no settings store to write to.
+    /// </summary>
+    readonly ISignatureStore? _signatures;
+
+    /// <summary>
+    /// The compose window's view of signature storage. An interface rather than
+    /// a pair of delegates because get and set have to agree about scope: a
+    /// signature saved for the account must be the one read back for it.
+    /// </summary>
+    public interface ISignatureStore
+    {
+        /// <summary>The stored signature for this address, or null if none.</summary>
+        string? Get(string fromAddress);
+
+        /// <summary>
+        /// Stores the signature for this address and enables signing for it.
+        /// Empty text clears it.
+        /// </summary>
+        void Save(string fromAddress, string text);
+    }
 
     /// <summary>Row this window owns, 0 until first saved. Kept so autosave
     /// updates one row rather than accumulating a copy per keystroke burst.</summary>
@@ -65,7 +97,8 @@ public partial class ComposeWindow : Window
         Draft? seed = null,
         DraftStore? drafts = null,
         long draftId = 0,
-        Func<string, bool, string?>? signature = null)
+        Func<string, bool, string?>? signature = null,
+        ISignatureStore? signatures = null)
     {
         InitializeComponent();
         _send = send;
@@ -73,7 +106,19 @@ public partial class ComposeWindow : Window
         _drafts = drafts;
         _draftId = draftId;
         _signature = signature;
+        _signatures = signatures;
         AttachmentBox.ItemsSource = _attachments;
+
+        // An empty bordered box with no label reads as a broken drop target, so
+        // the list only appears once it has something to show.
+        _attachments.CollectionChanged += (_, _) =>
+            AttachmentBox.Visibility = _attachments.Count == 0
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+
+        // Defining a signature needs somewhere to store it; without that the
+        // button could only ever report failure.
+        SignatureButton.IsEnabled = _signatures is not null;
 
         // Save periodically as well as on close: a crash or a power cut should
         // not be worse than clicking the X, and both are why the draft exists.
@@ -101,6 +146,11 @@ public partial class ComposeWindow : Window
         _isRich = seed?.HtmlBody is not null;
         RichRadio.IsChecked = _isRich;
         PlainRadio.IsChecked = !_isRich;
+
+        // Start matching the app, then let the toggle override per message.
+        _editorDark = Themes.ThemeManager.IsDark;
+        EditorThemeToggle.IsChecked = _editorDark;
+        UpdateEditorThemeLabel();
 
         Loaded += async (_, _) =>
         {
@@ -165,6 +215,32 @@ public partial class ComposeWindow : Window
     {
         if (!IsLoaded) return;
         _ = SwitchFormatAsync(RichRadio.IsChecked == true);
+    }
+
+    /// <summary>
+    /// Flips the editor page between a light and a dark ground. Only the page:
+    /// the message keeps whatever colours it carries, so this cannot change what
+    /// the recipient receives.
+    /// </summary>
+    void OnToggleEditorTheme(object sender, RoutedEventArgs e)
+    {
+        _editorDark = EditorThemeToggle.IsChecked == true;
+        UpdateEditorThemeLabel();
+        _ = ApplyEditorThemeAsync();
+    }
+
+    void UpdateEditorThemeLabel() =>
+        // Says what pressing it gives you, which is the opposite of the state.
+        EditorThemeToggle.Content = _editorDark ? "◑ Light" : "◐ Dark";
+
+    async Task ApplyEditorThemeAsync()
+    {
+        if (!_editorReady || RichEditor.CoreWebView2 is null) return;
+        RichEditor.DefaultBackgroundColor = _editorDark
+            ? System.Drawing.Color.FromArgb(0x28, 0x2C, 0x34)
+            : System.Drawing.Color.White;
+        await RichEditor.CoreWebView2.ExecuteScriptAsync(
+            $"window.setTheme({(_editorDark ? "true" : "false")});");
     }
 
     async Task SwitchFormatAsync(bool rich)
@@ -247,6 +323,13 @@ public partial class ComposeWindow : Window
         RichEditor.CoreWebView2.NavigateToString(page);
         await loaded.Task;
         _editorReady = true;
+
+        // Pin the surface behind the page. Left alone it follows Windows dark
+        // mode, which flashes the wrong colour before the page paints.
+        RichEditor.DefaultBackgroundColor = _editorDark
+            ? System.Drawing.Color.FromArgb(0x28, 0x2C, 0x34)
+            : System.Drawing.Color.White;
+        await ApplyEditorThemeAsync();
     }
 
     static string ReadEmbeddedEditor()
@@ -344,21 +427,63 @@ public partial class ComposeWindow : Window
         var text = _signature(from, isReply);
         if (string.IsNullOrWhiteSpace(text)) return;
 
+        await AppendSignatureAsync(text);
+
+        // Leave the caret above the signature, where the message gets written.
+        if (_isRich)
+            await RichEditor.CoreWebView2.ExecuteScriptAsync("window.focusBody();");
+        else
+            BodyBox.CaretIndex = 0;
+    }
+
+    /// <summary>
+    /// Insert a signature on demand, or define one. Deliberately available even
+    /// when a signature went on automatically: the common cases are wanting a
+    /// different one on this message, and discovering the stored one is wrong
+    /// while looking at the message it is wrong on.
+    /// </summary>
+    async void OnSignature(object sender, RoutedEventArgs e)
+    {
+        if (_signatures is null) return;
+        var from = FromBox.SelectedItem as string ?? "";
+
+        var dialog = new SignatureWindow(from, _signatures.Get(from)) { Owner = this };
+        if (dialog.ShowDialog() != true) return;
+
+        // Save first: even if the user only meant to insert it, an edited
+        // signature they liked enough to use is one they want next time.
+        if (dialog.Save) _signatures.Save(from, dialog.SignatureText);
+        if (dialog.Insert && !string.IsNullOrWhiteSpace(dialog.SignatureText))
+            await AppendSignatureAsync(dialog.SignatureText);
+
+        StatusText.Text = (dialog.Save, dialog.Insert) switch
+        {
+            (true, true) => "Signature saved and inserted.",
+            (true, false) => "Signature saved for this account.",
+            (false, true) => "Signature inserted.",
+            _ => "",
+        };
+    }
+
+    /// <summary>
+    /// Appends a signature to whatever is already written, separated by the
+    /// standard "-- " marker that clients use to trim signatures when quoting.
+    /// </summary>
+    async Task AppendSignatureAsync(string text)
+    {
         if (_isRich)
         {
-            var html = await ReadRichBodyAsync();
             var block = "<br><br><div>--&nbsp;<br>" +
                         System.Net.WebUtility.HtmlEncode(text).Replace("\n", "<br>") +
                         "</div>";
-            var json = JsonSerializer.Serialize(html + block);
-            await RichEditor.CoreWebView2.ExecuteScriptAsync($"window.setBody({json});");
-            await RichEditor.CoreWebView2.ExecuteScriptAsync("window.focusBody();");
+            // Appended through the page rather than by rewriting the whole body,
+            // so the caret and undo history survive.
+            await RichEditor.CoreWebView2.ExecuteScriptAsync(
+                $"window.appendBody({JsonSerializer.Serialize(block)});");
         }
         else
         {
             BodyBox.Text += $"{Environment.NewLine}{Environment.NewLine}-- {Environment.NewLine}{text}";
-            // Leave the caret at the top so the user types above the signature.
-            BodyBox.CaretIndex = 0;
         }
     }
 

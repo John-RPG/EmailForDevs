@@ -45,8 +45,29 @@
             <RadioButton x:Name="PlainRadio" Content="Plain text" Margin="8,0,0,0"
                          VerticalAlignment="Center" GroupName="Format"
                          Checked="OnFormatChanged"/>
-            <ListBox x:Name="AttachmentBox" Height="46" Width="470" Margin="12,0,0,0"
-                     BorderThickness="1" DisplayMemberPath="Display"/>
+            <!-- Insert or change a signature without leaving the message. The
+                 setting decides what goes on automatically; this is for the
+                 times that is not what you want. -->
+            <Button x:Name="SignatureButton" Content="Signature" Padding="10,2"
+                    Margin="16,0,0,0" Click="OnSignature"
+                    ToolTip="Insert a signature, or edit the one this account uses"
+                    AutomationProperties.AutomationId="compose-signature"/>
+
+            <!-- The rich editor is a web view, so it does not follow the app
+                 theme on its own; dark text on a dark page was unreadable. -->
+            <ToggleButton x:Name="EditorThemeToggle" Content="◐ Dark" Padding="8,2"
+                          Margin="8,0,0,0" Click="OnToggleEditorTheme"
+                          ToolTip="Switch the editor between a light and a dark page"
+                          AutomationProperties.Name="Editor theme"
+                          AutomationProperties.AutomationId="compose-editor-theme"/>
+
+            <!-- Collapsed until something is attached: an empty bordered box
+                 with no label reads as a drop target or a bug. -->
+            <ListBox x:Name="AttachmentBox" Height="46" Width="300" Margin="12,0,0,0"
+                     Visibility="Collapsed"
+                     BorderThickness="1" DisplayMemberPath="Display"
+                     AutomationProperties.Name="Attachments"
+                     AutomationProperties.AutomationId="compose-attachments"/>
         </StackPanel>
 
         <Grid Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,6">

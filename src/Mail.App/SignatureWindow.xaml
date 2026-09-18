@@ -1,0 +1,62 @@
+<Window x:Class="Mail.App.SignatureWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Signature" Height="430" Width="560" FontSize="12"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{DynamicResource Chrome.Background}"
+        Foreground="{DynamicResource Text.Primary}">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="Headline" Grid.Row="0" FontSize="16" FontWeight="SemiBold"
+                   TextWrapping="Wrap"/>
+
+        <!-- Says plainly why their Outlook signature is not already here, so the
+             absence reads as a Microsoft limitation rather than a missing feature. -->
+        <TextBlock Grid.Row="1" TextWrapping="Wrap" Margin="0,8,0,10"
+                   Foreground="{DynamicResource Text.Secondary}"
+                   Text="Outlook keeps its signatures in a roaming store that Microsoft exposes through no API — not Graph, and not the older Exchange route — so this one has to be written here once. It is stored with your other settings for this account."/>
+
+        <Border Grid.Row="2" BorderBrush="{DynamicResource Border}" BorderThickness="1">
+            <TextBox x:Name="SignatureBox" AcceptsReturn="True" AcceptsTab="True"
+                     TextWrapping="Wrap" BorderThickness="0" Padding="8"
+                     VerticalScrollBarVisibility="Auto"
+                     Background="{DynamicResource Chrome.Alt}"
+                     Foreground="{DynamicResource Text.Primary}"
+                     FontFamily="Consolas" FontSize="13"
+                     AutomationProperties.Name="Signature text"
+                     AutomationProperties.AutomationId="signature-text"/>
+        </Border>
+
+        <TextBlock Grid.Row="3" TextWrapping="Wrap" Margin="0,8,0,0"
+                   Foreground="{DynamicResource Text.Secondary}"
+                   Text="Written as typed. The standard &quot;-- &quot; separator is added for you, so other clients can fold the signature away when quoting."/>
+
+        <DockPanel Grid.Row="4" Margin="0,14,0,0">
+            <!-- Saving and inserting are separate acts: fixing a stored signature
+                 mid-message should not force it into this one, and borrowing a
+                 different signature once should not overwrite the stored one. -->
+            <Button x:Name="SaveOnlyButton" DockPanel.Dock="Left" Content="Save only"
+                    Padding="12,4" Click="OnSaveOnly"
+                    ToolTip="Store this for the account without adding it to this message"
+                    AutomationProperties.AutomationId="signature-saveonly"/>
+            <Button DockPanel.Dock="Right" Content="Cancel" Padding="16,4" Margin="8,0,0,0"
+                    IsCancel="True"
+                    AutomationProperties.AutomationId="signature-cancel"/>
+            <Button x:Name="InsertButton" DockPanel.Dock="Right" Content="Insert"
+                    Padding="18,4" IsDefault="True" Click="OnInsert"
+                    AutomationProperties.AutomationId="signature-insert"/>
+            <CheckBox x:Name="SaveBox" DockPanel.Dock="Right" VerticalAlignment="Center"
+                      Margin="0,0,12,0" IsChecked="True"
+                      Content="Save for this account"
+                      AutomationProperties.AutomationId="signature-save"/>
+            <TextBlock/>
+        </DockPanel>
+    </Grid>
+</Window>

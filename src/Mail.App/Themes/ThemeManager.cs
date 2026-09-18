@@ -110,6 +110,33 @@ public static class ThemeManager
         // render text through one need the default set on the text element too.
         if (window.ReadLocalValue(TextElement.ForegroundProperty) == DependencyProperty.UnsetValue)
             window.SetResourceReference(TextElement.ForegroundProperty, "Text.Primary");
+
+        ApplyIcon(window);
+    }
+
+    /// <summary>The app icon, loaded once and shared by every window.</summary>
+    static System.Windows.Media.Imaging.BitmapFrame? _icon;
+
+    /// <summary>
+    /// Puts the app icon in the title bar and Alt-Tab. Set per window because
+    /// WPF has no application-wide icon: a window without one shows the generic
+    /// executable icon even when the .exe itself is branded.
+    /// </summary>
+    static void ApplyIcon(Window window)
+    {
+        if (window.ReadLocalValue(Window.IconProperty) != DependencyProperty.UnsetValue)
+            return;
+        try
+        {
+            _icon ??= System.Windows.Media.Imaging.BitmapFrame.Create(
+                new Uri("pack://application:,,,/Assets/icon.ico"));
+            window.Icon = _icon;
+        }
+        catch (Exception)
+        {
+            // An icon is decoration: a packaging mistake should not stop a
+            // window from opening.
+        }
     }
 
     /// <summary>

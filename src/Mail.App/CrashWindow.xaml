@@ -1,0 +1,64 @@
+﻿<Window x:Class="Mail.App.CrashWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="eeeMail hit a problem" Height="620" Width="760" FontSize="12"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource Chrome.Background}"
+        Foreground="{DynamicResource Text.Primary}">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock x:Name="Headline" FontSize="17" FontWeight="SemiBold" TextWrapping="Wrap"/>
+            <TextBlock x:Name="Subhead" TextWrapping="Wrap" Margin="0,6,0,0"
+                       Foreground="{DynamicResource Text.Secondary}"/>
+        </StackPanel>
+
+        <!-- What you were doing, in your words. The stack says where it broke;
+             this is the only part that can say what you were trying to do. -->
+        <StackPanel Grid.Row="1" Margin="0,0,0,10">
+            <TextBlock Text="What were you doing? (optional, but it helps)"
+                       Margin="0,0,0,4"/>
+            <TextBox x:Name="NotesBox" Height="54" TextWrapping="Wrap" AcceptsReturn="True"
+                     VerticalScrollBarVisibility="Auto" Padding="6,4"
+                     AutomationProperties.Name="What were you doing"
+                     AutomationProperties.AutomationId="crash-notes"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="2" Margin="0,0,0,4"
+                   Text="Report contents — this is everything that will be sent:"/>
+
+        <TextBox x:Name="ReportBox" Grid.Row="3" IsReadOnly="True" FontFamily="Consolas"
+                 FontSize="11" TextWrapping="NoWrap"
+                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                 Padding="8" BorderBrush="{DynamicResource Chrome.Border}" BorderThickness="1"
+                 AutomationProperties.Name="Report contents"
+                 AutomationProperties.AutomationId="crash-report"/>
+
+        <StackPanel Grid.Row="4" Margin="0,12,0,0">
+            <TextBlock TextWrapping="Wrap" FontSize="11" Margin="0,0,0,10"
+                       Foreground="{DynamicResource Text.Secondary}"
+                       Text="Reporting opens GitHub in your browser with the report filled in. Nothing is sent until you press Submit there, and eeeMail never sees your GitHub credentials. Read the text above first — if anything in it is private, edit it out on the GitHub page or use Copy instead."/>
+            <DockPanel>
+                <Button x:Name="ReportButton" DockPanel.Dock="Left" Content="Report on GitHub…"
+                        Padding="14,5" Click="OnReport"
+                        AutomationProperties.AutomationId="crash-report-github"/>
+                <Button DockPanel.Dock="Left" Content="Copy" Padding="14,5" Margin="8,0,0,0"
+                        Click="OnCopy" AutomationProperties.AutomationId="crash-copy"/>
+                <Button DockPanel.Dock="Left" Content="Save to file…" Padding="14,5" Margin="8,0,0,0"
+                        Click="OnSave" AutomationProperties.AutomationId="crash-save"/>
+                <Button x:Name="CloseButton" DockPanel.Dock="Right" Content="Close"
+                        Padding="18,5" IsDefault="True" IsCancel="True" Click="OnClose"
+                        AutomationProperties.AutomationId="crash-close"/>
+                <TextBlock x:Name="ActionResult" VerticalAlignment="Center" Margin="10,0,0,0"
+                           Foreground="{DynamicResource Status.Good}"/>
+            </DockPanel>
+        </StackPanel>
+    </Grid>
+</Window>

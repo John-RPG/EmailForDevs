@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -70,6 +70,21 @@ public partial class MainWindow : Window
     }
 
     sealed record FolderNode(MailboxHandle Mailbox, long FolderId, string Name);
+
+    /// <summary>
+    /// The sync policy that keeps nothing on disk. Named rather than spelled
+    /// out at each site, because a typo would silently fall through to caching.
+    /// </summary>
+    const string OnlineOnlyPolicy = "OnlineOnly";
+
+    /// <summary>
+    /// The effective sync policy for a mailbox. Settings win over the legacy
+    /// mailbox columns, matching how the sync loop resolves it.
+    /// </summary>
+    string PolicyFor(MailboxHandle mailbox) =>
+        _settings?.GetString(SettingsCatalog.SyncPolicy, ChainFor(mailbox)) ?? mailbox.Policy;
+
+    bool IsOnlineOnly(MailboxHandle mailbox) => PolicyFor(mailbox) == OnlineOnlyPolicy;
 
     /// <summary>The folder the list is showing, for settings that resolve per folder.</summary>
     FolderNode? _openFolder;
@@ -1806,6 +1821,14 @@ public partial class MainWindow : Window
         ApplyColumnLayout(node);
         ApplyRowDensity(node);
 
+        // Online-only mailboxes have no rows to query: the list comes from the
+        // server each time the folder is opened.
+        if (IsOnlineOnly(node.Mailbox))
+        {
+            _ = LoadFolderLiveAsync(node);
+            return;
+        }
+
         using var cmd = node.Mailbox.Db.CreateCommand();
         cmd.CommandText = RowSelect + " WHERE m.folder_id = @f ORDER BY m.received_at DESC LIMIT 5000;";
         cmd.Parameters.AddWithValue("@f", node.FolderId);
@@ -1814,6 +1837,121 @@ public partial class MainWindow : Window
             $"{node.Mailbox.Upn} / {node.Name}: {MessageGrid.Items.Count:N0} message(s)" +
             LocalFolderSizeSuffix(node.Mailbox, node.FolderId);
         _ = ShowServerFolderSizeAsync(node);
+    }
+
+    /// <summary>
+    /// Rows for an online-only folder, read live from Graph.
+    ///
+    /// Cancelled and replaced whenever another folder is opened: clicking down
+    /// a folder list faster than the network answers would otherwise fill the
+    /// grid with whichever request happened to finish last.
+    /// </summary>
+    CancellationTokenSource? _liveLoad;
+
+    async Task LoadFolderLiveAsync(FolderNode node)
+    {
+        var previous = _liveLoad;
+        _liveLoad = new CancellationTokenSource();
+        previous?.Cancel();
+        previous?.Dispose();
+        var ct = _liveLoad.Token;
+
+        // The Graph id, which is what the server addresses folders by. The
+        // folder tree itself is still local, so this is a lookup rather than
+        // another round trip.
+        var serverId = FolderServerId(node);
+        if (serverId is null)
+        {
+            MessageGrid.ItemsSource = null;
+            StatusText.Text = $"{node.Name}: no server id for this folder.";
+            return;
+        }
+
+        MessageGrid.ItemsSource = null;
+        StatusText.Text = $"{node.Mailbox.Upn} / {node.Name}: loading from the server…";
+        try
+        {
+            var reader = await GetMessageReaderAsync(node.Mailbox);
+            var live = await reader.ListAsync(
+                LiveMailboxAddress(node.Mailbox), serverId, top: 200, ct: ct);
+            if (ct.IsCancellationRequested) return;
+
+            FillListLive(node.Mailbox, live);
+            StatusText.Text =
+                $"{node.Mailbox.Upn} / {node.Name}: {live.Count:N0} message(s), live — nothing cached locally";
+        }
+        catch (OperationCanceledException)
+        {
+            // Superseded by another folder; the newer load owns the grid now.
+        }
+        catch (Exception ex)
+        {
+            // Online-only has no cache to fall back on, so say plainly that the
+            // mail is unreachable rather than showing an empty folder, which
+            // would read as "no mail".
+            MessageGrid.ItemsSource = null;
+            StatusText.Text = $"{node.Name}: could not reach the server — {ex.Message}";
+            Log(LogLevel.Warning, $"{node.Mailbox.Upn}/{node.Name}: live load failed: {ex}");
+        }
+    }
+
+    /// <summary>The Graph folder id recorded for a folder, or null if unknown.</summary>
+    string? FolderServerId(FolderNode node)
+    {
+        using var cmd = node.Mailbox.Db.CreateCommand();
+        cmd.CommandText = "SELECT server_id FROM folders WHERE id = @f;";
+        cmd.Parameters.AddWithValue("@f", node.FolderId);
+        return cmd.ExecuteScalar() as string;
+    }
+
+    /// <summary>
+    /// The address Graph should be asked about: a shared mailbox by name, and
+    /// the signed-in user as null, which resolves to /me.
+    /// </summary>
+    static string? LiveMailboxAddress(MailboxHandle mailbox) =>
+        mailbox.IsShared ? mailbox.Upn : null;
+
+    /// <summary>
+    /// Turns live Graph messages into the same rows the local query produces,
+    /// so the grid, sorting and column layout work identically in both modes.
+    /// </summary>
+    void FillListLive(MailboxHandle mailbox, IReadOnlyList<GraphMessageReader.LiveMessage> messages)
+    {
+        var dateFormat = ListDateFormat(mailbox);
+        var rows = new List<MessageRow>(messages.Count);
+        foreach (var m in messages)
+        {
+            var status =
+                (m.HasAttachments ? "📎" : "") +
+                (m.IsFlagged ? "⚑" : "") +
+                (m.Importance switch { 2 => "❗", 0 => "▼", _ => "" });
+
+            rows.Add(new MessageRow(
+                mailbox,
+                // No local row exists, so the id is meaningless here; the
+                // server id is what identifies the message in this mode.
+                Id: 0,
+                ServerId: m.Id,
+                Status: status,
+                From: string.IsNullOrEmpty(m.FromName) || m.FromName == m.FromAddress
+                    ? m.FromAddress
+                    : $"{m.FromName} <{m.FromAddress}>",
+                FromName: m.FromName == m.FromAddress ? "" : m.FromName,
+                FromAddress: m.FromAddress,
+                To: m.ToAddress,
+                Received: m.Received?.ToLocalTime().ToString(dateFormat) ?? "",
+                // Graph's list projection omits size, and asking per row would
+                // cost a round trip each; left blank rather than guessed at.
+                SizeKb: "",
+                SizeVal: 0,
+                Subject: m.Subject,
+                IsUnread: !m.IsRead)
+            {
+                ReceivedValue = m.Received,
+            });
+        }
+        MessageGrid.ItemsSource = rows;
+        AutoSizeColumns();
     }
 
     void FillList(MailboxHandle mailbox, SqliteCommand cmd)
@@ -2115,7 +2253,59 @@ public partial class MainWindow : Window
         var client = new GraphServiceClient(
             new BaseBearerTokenAuthenticationProvider(new GraphTokenProvider(auth, token)));
         _graphClients[accountUpn] = client;
+        _graphTokenProviders[accountUpn] = new GraphTokenProvider(auth, token);
         return client;
+    }
+
+    /// <summary>
+    /// Token providers kept alongside the Graph clients, so the live reader can
+    /// authenticate the same way without repeating the sign-in dance.
+    /// </summary>
+    readonly Dictionary<string, GraphTokenProvider> _graphTokenProviders = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Live readers, one per account, each with its own authenticated client.</summary>
+    readonly Dictionary<string, GraphMessageReader> _messageReaders = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// A reader that talks to Graph directly for online-only mailboxes. Built
+    /// on the same token provider as the SDK client, so both honour the scopes
+    /// the account actually consented to.
+    /// </summary>
+    async Task<GraphMessageReader> GetMessageReaderAsync(MailboxHandle mailbox)
+    {
+        var accountUpn = mailbox.AccountUpn.Length > 0 ? mailbox.AccountUpn : mailbox.Upn;
+        if (_messageReaders.TryGetValue(accountUpn, out var cached))
+            return cached;
+
+        // Ensures the account is signed in and the provider is cached.
+        await GetGraphForAccountAsync(accountUpn);
+        var provider = _graphTokenProviders[accountUpn];
+
+        var http = new HttpClient(new GraphBearerHandler(provider))
+        {
+            Timeout = TimeSpan.FromSeconds(60),
+        };
+        var reader = new GraphMessageReader(http);
+        _messageReaders[accountUpn] = reader;
+        return reader;
+    }
+
+    /// <summary>
+    /// Attaches the account's bearer token to each request. The token provider
+    /// refreshes on its own, so this asks for one per call rather than caching
+    /// a string that would expire mid-session.
+    /// </summary>
+    sealed class GraphBearerHandler(GraphTokenProvider provider) : DelegatingHandler(new HttpClientHandler())
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+        {
+            var token = await provider.GetAuthorizationTokenAsync(
+                request.RequestUri!, cancellationToken: ct);
+            if (!string.IsNullOrEmpty(token))
+                request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            return await base.SendAsync(request, ct);
+        }
     }
 
     // ---- reading pane --------------------------------------------------------
@@ -2124,6 +2314,15 @@ public partial class MainWindow : Window
     {
         if (MessageGrid.SelectedItem is not MessageRow row || row.Mailbox is not MailboxHandle mailbox)
             return;
+
+        // An online-only row has no local id — the message exists only on the
+        // server — so it is fetched by its server id instead.
+        if (IsOnlineOnly(mailbox))
+        {
+            _ = ShowMessageLiveAsync(mailbox, row);
+            return;
+        }
+
         try
         {
             ShowMessage(mailbox, row.Id);
@@ -2231,6 +2430,131 @@ public partial class MainWindow : Window
         BodyThemeToggle.IsChecked = _themeMessageBodies;
         _ = RenderPreviewAsync();
     }
+
+    /// <summary>
+    /// Renders an online-only message, fetched by server id.
+    ///
+    /// Takes the raw MIME rather than Graph's parsed body, which means the same
+    /// parsing and rendering as a cached message — and the bytes are the
+    /// original ones the server holds rather than anything reconstructed, so
+    /// the headers and raw tabs are if anything more faithful here.
+    /// </summary>
+    async Task ShowMessageLiveAsync(MailboxHandle mailbox, MessageRow row)
+    {
+        if (row.ServerId is null) return;
+
+        var previous = _liveBody;
+        _liveBody = new CancellationTokenSource();
+        previous?.Cancel();
+        previous?.Dispose();
+        var ct = _liveBody.Token;
+
+        _currentMailbox = mailbox;
+        _currentMessageId = 0;
+        EnvelopeText.Text = "Loading from the server…";
+        try
+        {
+            var reader = await GetMessageReaderAsync(mailbox);
+            var mimeText = await reader.MimeAsync(LiveMailboxAddress(mailbox), row.ServerId, ct);
+            if (ct.IsCancellationRequested) return;
+            if (mimeText is null)
+            {
+                EnvelopeText.Text = "The server did not return this message.";
+                return;
+            }
+
+            var raw = Encoding.UTF8.GetBytes(mimeText);
+            RenderRawMessage(mailbox, raw);
+        }
+        catch (OperationCanceledException)
+        {
+            // Another message was selected; that load owns the pane now.
+        }
+        catch (Exception ex)
+        {
+            EnvelopeText.Text = $"Could not reach the server: {ex.Message}";
+            Log(LogLevel.Warning, $"{mailbox.Upn}: live body fetch failed: {ex}");
+        }
+    }
+
+    /// <summary>Cancels an in-flight body fetch when another message is picked.</summary>
+    CancellationTokenSource? _liveBody;
+
+    /// <summary>
+    /// Fills the reading pane from raw MIME. Shared by the cached and live
+    /// paths so both render identically — the only difference is where the
+    /// bytes came from.
+    /// </summary>
+    void RenderRawMessage(MailboxHandle mailbox, byte[] raw)
+    {
+        var readerFormat = ReaderDateFormat(mailbox);
+        var showAddresses = _settings?.GetBool(
+            SettingsCatalog.ShowAddressesNotNames, ChainFor(mailbox)) ?? true;
+
+        var mime = MimeMessage.Load(new MemoryStream(raw));
+
+        string Format(InternetAddressList list) => string.Join("; ", list.Select(a =>
+            a is MailboxAddress m
+                ? string.IsNullOrEmpty(m.Name) || m.Name == m.Address
+                    ? m.Address
+                    : showAddresses ? $"{m.Name} <{m.Address}>" : m.Name
+                : a.ToString()));
+
+        var envelope = new StringBuilder();
+        if (mime.From.Count > 0) envelope.AppendLine($"{"From",-8}: {Format(mime.From)}");
+        if (mime.To.Count > 0) envelope.AppendLine($"{"To",-8}: {Format(mime.To)}");
+        if (mime.Cc.Count > 0) envelope.AppendLine($"{"Cc",-8}: {Format(mime.Cc)}");
+        if (mime.Bcc.Count > 0) envelope.AppendLine($"{"Bcc",-8}: {Format(mime.Bcc)}");
+        envelope.AppendLine($"{"Date",-8}: {mime.Date.ToLocalTime().ToString(readerFormat)}");
+        envelope.AppendLine($"{"Subject",-8}: {mime.Subject}");
+        EnvelopeText.Text = envelope.ToString().TrimEnd();
+
+        _currentHtml = mime.HtmlBody;
+        BodyText.Text = mime.TextBody
+            ?? (_currentHtml is null ? "(no text body)" : HtmlText.ToPlainText(_currentHtml));
+        HtmlSourceText.Text = _currentHtml ?? "(no HTML body)";
+
+        var headerEnd = FindHeaderEnd(raw);
+        HeadersText.Text = Encoding.Latin1.GetString(raw, 0, headerEnd < 0 ? raw.Length : headerEnd);
+        RawText.Text = raw.Length <= RawDisplayCap
+            ? Encoding.Latin1.GetString(raw)
+            : Encoding.Latin1.GetString(raw, 0, RawDisplayCap) +
+              $"{Environment.NewLine}… (truncated for display: {raw.Length:N0} bytes total)";
+
+        // Attachments come from the parsed MIME rather than the attachments
+        // table, which has no row for a message that was never stored. Content
+        // is already in hand, so saving one needs no further request.
+        _allAttachments = [.. mime.BodyParts.OfType<MimePart>()
+            .Where(part => part.IsAttachment || IsInlinePart(part))
+            .Select((part, index) => new AttachmentItem(
+                mailbox,
+                Id: index,
+                part.FileName ?? "(unnamed)",
+                part.ContentType?.MimeType ?? "",
+                "",
+                IsInlinePart(part) ? "yes" : "",
+                HasContent: true)
+            {
+                IsInline = IsInlinePart(part),
+            })];
+        ShowInlineBox.IsChecked = _settings?.GetBool(
+            SettingsCatalog.ShowInlineAttachments, ChainFor(mailbox)) ?? false;
+        ApplyAttachmentFilter();
+
+        _themeMessageBodies = _settings?.GetBool(
+            SettingsCatalog.ThemeMessageBodies, ChainFor(mailbox)) ?? false;
+        BodyThemeToggle.IsChecked = _themeMessageBodies;
+        _ = RenderPreviewAsync();
+    }
+
+    /// <summary>
+    /// Whether a part is displayed within the message rather than attached to
+    /// it. MimeKit exposes the disposition as a string, so this compares
+    /// against its constant rather than reading a property that does not exist.
+    /// </summary>
+    static bool IsInlinePart(MimePart part) =>
+        string.Equals(part.ContentDisposition?.Disposition,
+            ContentDisposition.Inline, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Double-clicking a row saves it, same as the Save button.</summary>
     void OnAttachmentSave(object sender, MouseButtonEventArgs e) => SaveSelectedAttachment();
@@ -3566,6 +3890,18 @@ public partial class MainWindow : Window
                 if (_settings is not null && !_settings.GetBool(SettingsCatalog.SyncEnabled, chain))
                 {
                     Log(LogLevel.Info, $"{mailbox.Upn}: skipped — sync is turned off for it.");
+                    return;
+                }
+
+                // Online-only means exactly that: nothing is written to disk for
+                // this mailbox. Enforced here, at the one place that starts a
+                // sync, rather than trusted to every caller — the whole point of
+                // the mode is that mail does not land on the machine, so a
+                // missed check would silently break the promise.
+                if (policy == OnlineOnlyPolicy)
+                {
+                    Log(LogLevel.Info,
+                        $"{mailbox.Upn}: skipped — online-only, so nothing is cached locally.");
                     return;
                 }
 

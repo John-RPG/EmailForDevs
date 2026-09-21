@@ -20,10 +20,16 @@ public static class SettingsCatalog
         "sync.policy",
         "Sync policy",
         "MirrorServer keeps everything the server holds. WindowedCache keeps a " +
-        "recent window and falls back to server search for older mail.",
+        "recent window and falls back to server search for older mail. " +
+        "OnlineOnly stores nothing: every folder and message is read live from " +
+        "the server, so no mail is written to this machine. That also means no " +
+        "offline access, a round trip whenever you open a folder, and search " +
+        "and conversation grouping answered by the server rather than by the " +
+        "local index — which groups and ranks differently. An existing cache " +
+        "is left alone rather than deleted, so switching back resumes from it.",
         SettingKind.Enum, "MirrorServer",
         [Folder, Mailbox, Account, Application],
-        Choices: ["MirrorServer", "WindowedCache"],
+        Choices: ["MirrorServer", "WindowedCache", "OnlineOnly"],
         Category: "Sync");
 
     public static readonly SettingDefinition SyncWindowMonths = new(

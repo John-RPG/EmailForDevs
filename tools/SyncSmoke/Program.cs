@@ -497,6 +497,188 @@ if (args.Length > 0 && args[0].Equals("sigprobe", StringComparison.OrdinalIgnore
     return;
 }
 
+if (args.Length > 0 && args[0].Equals("roamprobe", StringComparison.OrdinalIgnoreCase))
+{
+    // Does the EWS route reach the user's REAL signatures, or only the single
+    // legacy OWA one? Two separate questions, tested separately:
+    //   - what OWA.UserOptions actually contains, in full
+    //   - whether the roaming signature items are reachable at all
+    // Roaming signatures are documented as ordinary message items in hidden
+    // subfolders of ApplicationDataRoot, not as FAI configuration, so
+    // GetUserConfiguration is the wrong verb for them by construction.
+    var rAuth = new GraphAuthenticator(Path.Combine(root, "msal.cache"));
+    using var rHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+    var rWho = args.Length > 1 ? args[1] : "user@example.com";
+
+    var rAll = (await rAuth.GetAccountsAsync()).ToList();
+    var rAcct = rAll.FirstOrDefault(a => a.Username.Equals(rWho, StringComparison.OrdinalIgnoreCase));
+    if (rAcct is null)
+    {
+        Console.WriteLine($"{rWho} not signed in. Signed-in accounts:");
+        foreach (var a in rAll) Console.WriteLine($"    {a.Username}");
+        return;
+    }
+    var rTok = await rAuth.AcquireSilentAsync(rAcct, GraphAuthenticator.ExchangeScopes);
+    if (rTok is null) { Console.WriteLine("no EWS token"); return; }
+
+    const string rEws = "https://outlook.office365.com/EWS/Exchange.asmx";
+    async Task<string> Soap(string body)
+    {
+        var envelope = $"""
+            <?xml version="1.0" encoding="utf-8"?>
+            <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+                           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+                           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+              <soap:Header><t:RequestServerVersion Version="Exchange2013_SP1"/></soap:Header>
+              <soap:Body>{body}</soap:Body>
+            </soap:Envelope>
+            """;
+        using var req = new HttpRequestMessage(HttpMethod.Post, rEws);
+        req.Headers.Authorization = new("Bearer", rTok.AccessToken);
+        req.Content = new StringContent(envelope, System.Text.Encoding.UTF8, "text/xml");
+        var resp = await rHttp.SendAsync(req);
+        return await resp.Content.ReadAsStringAsync();
+    }
+
+    Console.WriteLine($"=== {rWho} ===");
+
+    // ---- 1. the legacy signature, in full --------------------------------
+    Console.WriteLine();
+    Console.WriteLine("[1] OWA.UserOptions contents");
+    var opts = await Soap("""
+        <m:GetUserConfiguration>
+          <m:UserConfigurationName Name="OWA.UserOptions">
+            <t:DistinguishedFolderId Id="root"/>
+          </m:UserConfigurationName>
+          <m:UserConfigurationProperties>All</m:UserConfigurationProperties>
+        </m:GetUserConfiguration>
+        """);
+    foreach (System.Text.RegularExpressions.Match e in
+             System.Text.RegularExpressions.Regex.Matches(opts,
+                 @"<t:DictionaryEntry>\s*<t:DictionaryKey>.*?<t:Value>(.*?)</t:Value>.*?</t:DictionaryKey>\s*<t:DictionaryValue>.*?<t:Value>(.*?)</t:Value>",
+                 System.Text.RegularExpressions.RegexOptions.Singleline))
+    {
+        var key = e.Groups[1].Value;
+        var val = e.Groups[2].Value;
+        if (!key.Contains("ignature", StringComparison.Ordinal)) continue;
+        var flat = System.Net.WebUtility.HtmlDecode(val).ReplaceLineEndings(" ");
+        Console.WriteLine($"    {key} = {(flat.Length > 300 ? flat[..300] + " …" : flat)}");
+        Console.WriteLine($"      ({flat.Length} chars)");
+    }
+
+    // ---- 2. what lives under ApplicationDataRoot -------------------------
+    // Roaming signatures are stored per-signature in subfolders here. If they
+    // are reachable at all, the folders show up in this traversal.
+    Console.WriteLine();
+    Console.WriteLine("[2] hidden folders under the mailbox root");
+    var folders = await Soap("""
+        <m:FindFolder Traversal="Deep">
+          <m:FolderShape>
+            <t:BaseShape>Default</t:BaseShape>
+            <t:AdditionalProperties>
+              <t:FieldURI FieldURI="folder:FolderClass"/>
+            </t:AdditionalProperties>
+          </m:FolderShape>
+          <m:ParentFolderIds><t:DistinguishedFolderId Id="root"/></m:ParentFolderIds>
+        </m:FindFolder>
+        """);
+    var names = System.Text.RegularExpressions.Regex.Matches(folders, @"<t:DisplayName>(.*?)</t:DisplayName>");
+    var interesting = 0;
+    foreach (System.Text.RegularExpressions.Match n in names)
+    {
+        var name = n.Groups[1].Value;
+        if (name.Contains("ignature", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("ApplicationDataRoot", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("49499048", StringComparison.Ordinal))
+        {
+            Console.WriteLine($"    {name}");
+            interesting++;
+        }
+    }
+    Console.WriteLine($"    ({names.Count} folders total, {interesting} signature-related)");
+    var fault = System.Text.RegularExpressions.Regex.Match(folders, @"<(?:m|s):ResponseCode>(.*?)</");
+    if (fault.Success && fault.Groups[1].Value != "NoError")
+        Console.WriteLine($"    FindFolder responded: {fault.Groups[1].Value}");
+
+    // ---- 3b. read what is inside roaming_signature_list ------------------
+    // The folder turned up in the traversal, so ask for its items. If the
+    // names and bodies come back, roaming signatures ARE reachable over EWS
+    // and every claim that they are not is simply wrong.
+    Console.WriteLine();
+    Console.WriteLine("[3b] items inside roaming_signature_list");
+    var listFolder = await Soap("""
+        <m:FindFolder Traversal="Deep">
+          <m:FolderShape><t:BaseShape>IdOnly</t:BaseShape>
+            <t:AdditionalProperties>
+              <t:FieldURI FieldURI="folder:DisplayName"/>
+              <t:FieldURI FieldURI="folder:TotalCount"/>
+            </t:AdditionalProperties>
+          </m:FolderShape>
+          <m:Restriction>
+            <t:IsEqualTo>
+              <t:FieldURI FieldURI="folder:DisplayName"/>
+              <t:FieldURIOrConstant><t:Constant Value="roaming_signature_list"/></t:FieldURIOrConstant>
+            </t:IsEqualTo>
+          </m:Restriction>
+          <m:ParentFolderIds><t:DistinguishedFolderId Id="root"/></m:ParentFolderIds>
+        </m:FindFolder>
+        """);
+    var fid = System.Text.RegularExpressions.Regex.Match(listFolder, @"<t:FolderId Id=""([^""]+)""");
+    if (!fid.Success) { Console.WriteLine("    could not resolve the folder id"); return; }
+    Console.WriteLine($"    folder id resolved ({fid.Groups[1].Value.Length} chars)");
+    var total = System.Text.RegularExpressions.Regex.Match(listFolder, @"<t:TotalCount>(\d+)</t:TotalCount>");
+    if (total.Success) Console.WriteLine($"    TotalCount: {total.Groups[1].Value}");
+
+    // Associated items first: roaming signatures are commonly stored as FAI
+    // within the folder rather than as ordinary messages.
+    foreach (var traversal in new[] { "Associated", "Shallow" })
+    {
+        var items = await Soap($"""
+            <m:FindItem Traversal="{traversal}">
+              <m:ItemShape>
+                <t:BaseShape>AllProperties</t:BaseShape>
+              </m:ItemShape>
+              <m:ParentFolderIds><t:FolderId Id="{fid.Groups[1].Value}"/></m:ParentFolderIds>
+            </m:FindItem>
+            """);
+        var code = System.Text.RegularExpressions.Regex.Match(items, @"<(?:m|s):ResponseCode>(.*?)</");
+        var subjects = System.Text.RegularExpressions.Regex.Matches(items, @"<t:Subject>(.*?)</t:Subject>");
+        var classes = System.Text.RegularExpressions.Regex.Matches(items, @"<t:ItemClass>(.*?)</t:ItemClass>");
+        Console.WriteLine($"    {traversal,-11} {(code.Success ? code.Groups[1].Value : "?")}  " +
+                          $"{subjects.Count} item(s)");
+        for (var i = 0; i < subjects.Count; i++)
+            Console.WriteLine($"        \"{subjects[i].Groups[1].Value}\"" +
+                              (i < classes.Count ? $"   [{classes[i].Groups[1].Value}]" : ""));
+        if (subjects.Count == 0 && code.Success && code.Groups[1].Value != "NoError")
+            Console.WriteLine($"        (nothing returned)");
+    }
+
+    // ---- 3. the documented roaming signature container -------------------
+    Console.WriteLine();
+    Console.WriteLine("[3] ApplicationDataRoot\\49499048-…  (documented roaming location)");
+    var appData = await Soap("""
+        <m:FindFolder Traversal="Deep">
+          <m:FolderShape><t:BaseShape>IdOnly</t:BaseShape>
+            <t:AdditionalProperties><t:FieldURI FieldURI="folder:DisplayName"/></t:AdditionalProperties>
+          </m:FolderShape>
+          <m:Restriction>
+            <t:Contains ContainmentMode="Substring" ContainmentComparison="IgnoreCase">
+              <t:FieldURI FieldURI="folder:DisplayName"/>
+              <t:Constant Value="49499048"/>
+            </t:Contains>
+          </m:Restriction>
+          <m:ParentFolderIds><t:DistinguishedFolderId Id="msgfolderroot"/></m:ParentFolderIds>
+        </m:FindFolder>
+        """);
+    var hit = System.Text.RegularExpressions.Regex.Match(appData, @"<(?:m|s):ResponseCode>(.*?)</");
+    Console.WriteLine($"    response: {(hit.Success ? hit.Groups[1].Value : "?")}");
+    foreach (System.Text.RegularExpressions.Match n in
+             System.Text.RegularExpressions.Regex.Matches(appData, @"<t:DisplayName>(.*?)</t:DisplayName>"))
+        Console.WriteLine($"    found: {n.Groups[1].Value}");
+
+    return;
+}
+
 if (args.Length > 0 && args[0].Equals("setsig", StringComparison.OrdinalIgnoreCase))
 {
     var store = new SettingsStore(appDb);
@@ -506,6 +688,92 @@ if (args.Length > 0 && args[0].Equals("setsig", StringComparison.OrdinalIgnoreCa
     Console.WriteLine("signature configured:");
     Console.WriteLine($"  source: {store.GetString(SettingsCatalog.SignatureSource, SettingTarget.Application)}");
     Console.WriteLine($"  text  : {store.GetString(SettingsCatalog.SignatureText, SettingTarget.Application).Replace("\n", " / ")}");
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("paths", StringComparison.OrdinalIgnoreCase))
+{
+    // What the registry holds, and whether each file is actually there once
+    // resolved the way the app resolves it.
+    Console.WriteLine($"root (SyncSmoke)  : {root}");
+    Console.WriteLine($"EEEMAIL_DATA_DIR  : {Environment.GetEnvironmentVariable("EEEMAIL_DATA_DIR") ?? "(unset)"}");
+    Console.WriteLine($"app default       : {Mail.Core.Storage.DataLocation.ResolveWithoutCreating(AppContext.BaseDirectory)}");
+    Console.WriteLine();
+
+    using var cmd = appDb.CreateCommand();
+    cmd.CommandText = "SELECT upn, db_path, kind FROM mailboxes ORDER BY id;";
+    using var reader = cmd.ExecuteReader();
+    while (reader.Read())
+    {
+        var mbUpn = reader.GetString(0);
+        var stored = reader.IsDBNull(1) ? "(null)" : reader.GetString(1);
+        var kind = reader.GetString(2);
+        var rooted = Path.IsPathRooted(stored);
+        var resolved = rooted ? stored : Path.Combine(root, stored);
+        Console.WriteLine($"{mbUpn} [{kind}]");
+        Console.WriteLine($"    stored   : {stored}");
+        Console.WriteLine($"    rooted   : {rooted}");
+        Console.WriteLine($"    resolved : {resolved}");
+        Console.WriteLine($"    exists   : {File.Exists(resolved)}");
+    }
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("fixpaths", StringComparison.OrdinalIgnoreCase))
+{
+    // Rewrites stale relative db_path rows to absolute paths. Dry run unless
+    // "apply" is passed, because this edits the registry every mailbox depends
+    // on and a wrong guess would detach a mailbox from its data.
+    var apply = args.Length > 1 && args[1].Equals("apply", StringComparison.OrdinalIgnoreCase);
+    Console.WriteLine(apply ? "APPLYING" : "DRY RUN — pass 'apply' to write");
+    Console.WriteLine();
+
+    var updates = new List<(long Id, string Upn, string From, string To)>();
+    using (var cmd = appDb.CreateCommand())
+    {
+        cmd.CommandText = "SELECT id, upn, db_path FROM mailboxes ORDER BY id;";
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            var id = reader.GetInt64(0);
+            var mbUpn = reader.GetString(1);
+            var stored = reader.IsDBNull(2) ? "" : reader.GetString(2);
+            if (stored.Length == 0 || Path.IsPathRooted(stored)) continue;
+
+            // Where the file actually is. The stored path is relative to the
+            // repository root, which is the data directory's parent when the
+            // data directory is the .scratch folder inside it.
+            var candidates = new[]
+            {
+                Path.GetFullPath(Path.Combine(root, stored)),
+                Path.GetFullPath(Path.Combine(Directory.GetParent(root)?.FullName ?? root, stored)),
+                Path.GetFullPath(Path.Combine(root, Path.GetFileName(stored))),
+                Path.GetFullPath(Path.Combine(root, "mailboxes", Path.GetFileName(stored))),
+            };
+            var found = candidates.FirstOrDefault(File.Exists);
+            Console.WriteLine($"{mbUpn}");
+            Console.WriteLine($"    stored : {stored}");
+            if (found is null)
+            {
+                Console.WriteLine("    -> no file found at any candidate path; left alone");
+                continue;
+            }
+            Console.WriteLine($"    -> {found}");
+            updates.Add((id, mbUpn, stored, found));
+        }
+    }
+
+    if (!apply) { Console.WriteLine($"\n{updates.Count} row(s) would be rewritten."); return; }
+    foreach (var u in updates)
+    {
+        using var cmd = appDb.CreateCommand();
+        cmd.CommandText = "UPDATE mailboxes SET db_path = @p WHERE id = @i;";
+        cmd.Parameters.AddWithValue("@p", u.To);
+        cmd.Parameters.AddWithValue("@i", u.Id);
+        cmd.ExecuteNonQuery();
+        Console.WriteLine($"updated {u.Upn}");
+    }
+    Console.WriteLine($"\n{updates.Count} row(s) rewritten.");
     return;
 }
 

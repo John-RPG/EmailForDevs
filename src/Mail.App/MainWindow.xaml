@@ -275,6 +275,15 @@
             <Button DockPanel.Dock="Right" Content="Search" Click="OnSearchClick"
                     Margin="4,0,0,0" Padding="10,2"
                     AutomationProperties.AutomationId="cmd-search"/>
+            <!-- Where the search looks, kept beside the box rather than buried
+                 in settings: widening the scope is the usual next move when a
+                 search finds nothing, so it has to be one click away. -->
+            <ComboBox x:Name="ScopeBox" DockPanel.Dock="Right" Margin="4,0,0,0"
+                      MinWidth="150" VerticalContentAlignment="Center"
+                      SelectionChanged="OnScopeChanged"
+                      ToolTip="Which folders the search covers"
+                      AutomationProperties.Name="Search scope"
+                      AutomationProperties.AutomationId="search-scope"/>
             <TextBox x:Name="SearchBox" KeyDown="OnSearchKeyDown"
                      VerticalContentAlignment="Center"
                      AutomationProperties.Name="Search">

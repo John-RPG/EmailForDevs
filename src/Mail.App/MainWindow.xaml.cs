@@ -845,6 +845,7 @@ public partial class MainWindow : Window
             LoadMailboxHandles(_dataDir);
             LoadFavourites();
             BuildTree();
+            BuildScopeBox();
             StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
             Log($"Profile opened: {_mailboxes.Count} mailbox(es).");
 
@@ -1956,6 +1957,16 @@ public partial class MainWindow : Window
 
     void FillList(MailboxHandle mailbox, SqliteCommand cmd)
     {
+        MessageGrid.ItemsSource = ReadRows(mailbox, cmd);
+        AutoSizeColumns();
+    }
+
+    /// <summary>
+    /// Reads rows without touching the grid, so a search spanning several
+    /// mailboxes can merge them before displaying anything.
+    /// </summary>
+    List<MessageRow> ReadRows(MailboxHandle mailbox, SqliteCommand cmd)
+    {
         // Resolved once per fill rather than per row: the chain walk is cheap
         // but a five-thousand-row list makes anything per-row worth avoiding.
         var dateFormat = ListDateFormat(mailbox);
@@ -1995,22 +2006,47 @@ public partial class MainWindow : Window
                 });
             }
         }
-        MessageGrid.ItemsSource = rows;
-        AutoSizeColumns();
+        return rows;
     }
 
-    /// <summary>Re-fits Auto columns to the currently realized rows; Subject keeps its star width.</summary>
+    /// <summary>
+    /// Guards against a refit landing while an earlier one is still pending.
+    /// Searching refills the grid faster than a background callback returns,
+    /// and a second pass collapsing the columns before the first restored them
+    /// left every column at zero width — the symptom being a grid of slivers
+    /// with only Subject readable.
+    /// </summary>
+    bool _resizingColumns;
+
     void AutoSizeColumns()
     {
-        foreach (var column in MessageGrid.Columns)
-            if (!ReferenceEquals(column, ColSubject) && column.Visibility == Visibility.Visible)
-                column.Width = 0;
+        if (_resizingColumns) return;
+        _resizingColumns = true;
+
+        // Deliberately not collapsed to zero first. Setting Auto on a column
+        // that already has a width re-measures it against the realized rows
+        // anyway, and the zero is what is visible if anything interrupts
+        // before the restore runs.
         Dispatcher.BeginInvoke(() =>
         {
-            foreach (var column in MessageGrid.Columns)
-                if (!ReferenceEquals(column, ColSubject) && column.Visibility == Visibility.Visible)
-                    column.Width = DataGridLength.Auto;
-        }, System.Windows.Threading.DispatcherPriority.Background);
+            try
+            {
+                foreach (var column in MessageGrid.Columns)
+                {
+                    if (ReferenceEquals(column, ColSubject) ||
+                        column.Visibility != Visibility.Visible)
+                        continue;
+                    // Round-trip through Auto so the column re-measures against
+                    // the rows now present rather than keeping a width fitted
+                    // to whatever was in the grid before.
+                    column.Width = new DataGridLength(1, DataGridLengthUnitType.Auto);
+                }
+            }
+            finally
+            {
+                _resizingColumns = false;
+            }
+        }, System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     // ---- message actions -----------------------------------------------------
@@ -3466,6 +3502,90 @@ public partial class MainWindow : Window
 
     void OnSearchClick(object sender, RoutedEventArgs e) => RunSearch();
 
+    /// <summary>Folders picked by hand, for the Selected scope.</summary>
+    List<(string MailboxKey, long FolderId)> _selectedScopeFolders = [];
+
+    /// <summary>Fills the scope dropdown from the enum, so a new scope appears automatically.</summary>
+    void BuildScopeBox()
+    {
+        if (ScopeBox.Items.Count > 0) return;
+        foreach (var kind in Enum.GetValues<SearchScopeKind>())
+            ScopeBox.Items.Add(new ScopeChoice(kind));
+        ScopeBox.SelectedIndex = 0;
+    }
+
+    sealed record ScopeChoice(SearchScopeKind Kind)
+    {
+        public override string ToString() => ScopeResolver.Describe(Kind);
+    }
+
+    SearchScopeKind CurrentScope =>
+        (ScopeBox.SelectedItem as ScopeChoice)?.Kind ?? SearchScopeKind.Folder;
+
+    /// <summary>
+    /// Picking "Selected folders…" opens the picker immediately: choosing it
+    /// and then having to find another control to say which folders would be a
+    /// dead end.
+    /// </summary>
+    void OnScopeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        if (CurrentScope == SearchScopeKind.Selected && !_pickingScope)
+            ShowScopePicker();
+        else if (SearchBox.Text.Trim().Length > 0)
+            RunSearch();   // re-run at the new width rather than making them press Enter
+    }
+
+    /// <summary>Guards against the picker re-entering through SelectionChanged.</summary>
+    bool _pickingScope;
+
+    void ShowScopePicker()
+    {
+        _pickingScope = true;
+        try
+        {
+            var entries = _mailboxes
+                .Select(m => new ScopePickerWindow.MailboxEntry(
+                    m.Upn, m.DisplayName.Length > 0 ? m.DisplayName : m.Upn, m.Db))
+                .ToList();
+            var picker = new ScopePickerWindow(entries, _selectedScopeFolders) { Owner = this };
+            if (picker.ShowDialog() == true && picker.Selection.Count > 0)
+            {
+                _selectedScopeFolders = [.. picker.Selection];
+                if (SearchBox.Text.Trim().Length > 0) RunSearch();
+            }
+            else if (_selectedScopeFolders.Count == 0)
+            {
+                // Cancelled with nothing chosen: fall back rather than leaving a
+                // scope selected that would search nothing.
+                ScopeBox.SelectedIndex = 0;
+            }
+        }
+        finally
+        {
+            _pickingScope = false;
+        }
+    }
+
+    /// <summary>Every folder in every open mailbox, as the resolver needs them.</summary>
+    List<ScopeResolver.Folder> ScopeTree()
+    {
+        var folders = new List<ScopeResolver.Folder>();
+        foreach (var mailbox in _mailboxes)
+        {
+            using var cmd = mailbox.Db.CreateCommand();
+            cmd.CommandText = "SELECT id, parent_id FROM folders;";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+                folders.Add(new ScopeResolver.Folder(
+                    mailbox.Upn,
+                    mailbox.AccountUpn.Length > 0 ? mailbox.AccountUpn : mailbox.Upn,
+                    reader.GetInt64(0),
+                    reader.IsDBNull(1) ? null : reader.GetInt64(1)));
+        }
+        return folders;
+    }
+
     void RunSearch()
     {
         var term = SearchBox.Text.Trim();
@@ -3477,19 +3597,68 @@ public partial class MainWindow : Window
                 LoadFolder(new FolderNode(selectedMailbox, selected.FolderId, selected.Name));
             return;
         }
-        var mailbox = (FolderTree.SelectedItem as FolderNodeViewModel)?.Mailbox as MailboxHandle
-            ?? _mailboxes.FirstOrDefault();
-        if (mailbox is null) return;
+
+        var open = FolderTree.SelectedItem as FolderNodeViewModel;
+        var current = open?.Mailbox as MailboxHandle ?? _mailboxes.FirstOrDefault();
+        if (current is null) return;
+
+        var scope = ScopeResolver.Resolve(
+            CurrentScope,
+            ScopeTree(),
+            current.Upn,
+            open is { IsGroupHeader: false } ? open.FolderId : null,
+            _selectedScopeFolders);
+
+        if (!scope.Mailboxes.Any())
+        {
+            StatusText.Text = "Search: nothing in scope. Pick a folder, or widen the scope.";
+            return;
+        }
+
         try
         {
             var compiled = SqliteQueryCompiler.Compile(QueryParser.Parse(term));
-            using var cmd = mailbox.Db.CreateCommand();
-            cmd.CommandText = RowSelect +
-                $" WHERE {compiled.WhereSql} ORDER BY m.received_at DESC LIMIT 500;";
-            foreach (var (name, value) in compiled.Parameters)
-                cmd.Parameters.AddWithValue(name, value);
-            FillList(mailbox, cmd);
-            StatusText.Text = $"Search '{term}' in {mailbox.Upn}: {MessageGrid.Items.Count:N0} hit(s)";
+            var rows = new List<MessageRow>();
+            var searched = 0;
+
+            // One query per mailbox: each has its own encrypted database, so a
+            // cross-mailbox search is several queries merged rather than a join.
+            foreach (var mailboxKey in scope.Mailboxes)
+            {
+                var mailbox = _mailboxes.FirstOrDefault(m =>
+                    string.Equals(m.Upn, mailboxKey, StringComparison.OrdinalIgnoreCase));
+                if (mailbox is null) continue;
+
+                var (folderSql, folderParameters) = scope.FolderFilter(mailboxKey);
+                var where = folderSql.Length == 0
+                    ? compiled.WhereSql
+                    : $"({compiled.WhereSql}) AND {folderSql}";
+
+                using var cmd = mailbox.Db.CreateCommand();
+                cmd.CommandText = RowSelect +
+                    $" WHERE {where} ORDER BY m.received_at DESC LIMIT 500;";
+                foreach (var (name, value) in compiled.Parameters)
+                    cmd.Parameters.AddWithValue(name, value);
+                foreach (var (name, value) in folderParameters)
+                    cmd.Parameters.AddWithValue(name, value);
+
+                rows.AddRange(ReadRows(mailbox, cmd));
+                searched++;
+            }
+
+            // Merged newest-first, so results from several mailboxes interleave
+            // by date rather than arriving in mailbox order.
+            rows.Sort((a, b) => Nullable.Compare(b.ReceivedValue, a.ReceivedValue));
+            if (rows.Count > 500) rows.RemoveRange(500, rows.Count - 500);
+
+            MessageGrid.ItemsSource = rows;
+            AutoSizeColumns();
+
+            var where2 = ScopeResolver.Describe(CurrentScope).ToLowerInvariant();
+            var scopeDetail = searched > 1 ? $"{where2}, {searched} mailboxes" : where2;
+            StatusText.Text =
+                $"Search '{term}' ({scopeDetail}): {rows.Count:N0} hit(s)" +
+                (rows.Count >= 500 ? " — showing the first 500" : "");
             SearchBox.Background = System.Windows.Media.Brushes.Transparent;
         }
         catch (Exception ex) when (ex is QueryParseException or QueryCompilationException)

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO.Compression;
 using System.Security.Cryptography;
 
@@ -113,8 +113,9 @@ public sealed class UpdateInstaller(HttpClient http)
         }
 
         var script = Path.Combine(stagingDirectory, "apply-update.cmd");
-        File.WriteAllText(script, SwapScript(
-            Environment.ProcessId, staged, currentExePath, stagingDirectory));
+        File.WriteAllText(script, SwapScript(new SwapPlan(
+            Environment.ProcessId, staged, currentExePath, stagingDirectory,
+            LogPathFor(stagingDirectory))));
 
         Process.Start(new ProcessStartInfo("cmd.exe", $"/c \"{script}\"")
         {
@@ -126,36 +127,116 @@ public sealed class UpdateInstaller(HttpClient http)
     }
 
     /// <summary>
-    /// The swap, as a batch file. Kept small and readable on purpose: it runs
-    /// unsupervised, after the app is gone, with no way to report a failure
-    /// except by leaving the old binary working.
+    /// Where the swap script records what it did. Beside the staging directory
+    /// rather than in it, because the script deletes the staging directory when
+    /// it succeeds.
     /// </summary>
-    static string SwapScript(int pid, string staged, string target, string staging)
+    public static string LogPathFor(string stagingDirectory) =>
+        Path.Combine(
+            Path.GetDirectoryName(Path.GetFullPath(stagingDirectory)) ?? stagingDirectory,
+            "apply-update.log");
+
+    /// <summary>What the swap script needs to know.</summary>
+    /// <param name="Pid">The app process to wait for.</param>
+    /// <param name="Staged">The verified new executable.</param>
+    /// <param name="Target">The executable being replaced.</param>
+    /// <param name="Staging">Deleted after a successful swap.</param>
+    /// <param name="LogPath">Appended to, so each attempt leaves a record.</param>
+    /// <param name="WaitSeconds">
+    /// How long the app gets to exit on its own before it is forced closed.
+    /// </param>
+    /// <param name="Launch">
+    /// The batch command that starts the app afterwards. Replaceable so tests can
+    /// observe the relaunch without starting anything.
+    /// </param>
+    public sealed record SwapPlan(
+        int Pid, string Staged, string Target, string Staging, string LogPath,
+        int WaitSeconds = 30, string? Launch = null);
+
+    /// <summary>
+    /// The swap, as a batch file. It runs unsupervised after the app is gone,
+    /// so it has to finish on its own whatever happens, and has to leave a
+    /// working app behind: the new one if the swap succeeds, the old one if not.
+    ///
+    /// It used to wait for the app to exit with no limit, and to exit silently
+    /// on failure without relaunching anything. An app that hung on shutdown
+    /// therefore left the user with no window, no update and no clue. Now the
+    /// wait is bounded and ends by forcing the app closed (safe: every database
+    /// write is an atomic commit), every step is logged, and every exit path
+    /// starts some version of the app.
+    ///
+    /// System tools are called by absolute path, since a PATH carrying Unix
+    /// tools (Git's usr\bin, for one) can shadow find and timeout. The delay is
+    /// ping rather than timeout, which refuses to run without a console.
+    /// </summary>
+    public static string SwapScript(SwapPlan plan)
     {
-        var backup = target + ".old";
+        // Batch expands %...% even inside quotes, so a literal % in a path
+        // must be doubled or the path silently changes.
+        static string Esc(string value) => value.Replace("%", "%%");
+
+        var pid = plan.Pid;
+        var target = Esc(plan.Target);
+        var backup = Esc(plan.Target + ".old");
+        var staged = Esc(plan.Staged);
+        var staging = Esc(plan.Staging);
+        var log = Esc(plan.LogPath);
+        var launch = plan.Launch ?? $"start \"\" \"{target}\"";
+
         return $"""
             @echo off
-            rem Wait for eeeMail (pid {pid}) to exit before touching its exe.
+            setlocal
+            set "SYS=%SystemRoot%\System32"
+            set "LOG={log}"
+            echo.>>"%LOG%"
+            echo %date% %time% Update: waiting for eeeMail pid {pid} to exit.>>"%LOG%"
+
+            rem Wait for the app to exit before touching its exe - but not forever.
+            set /a waited=0
             :wait
-            tasklist /fi "PID eq {pid}" 2>nul | find "{pid}" >nul
-            if not errorlevel 1 (
-                timeout /t 1 /nobreak >nul
-                goto wait
-            )
+            "%SYS%\tasklist.exe" /nh /fi "PID eq {pid}" 2>nul | "%SYS%\find.exe" " {pid} " >nul
+            if errorlevel 1 goto gone
+            if %waited% geq {plan.WaitSeconds} goto force
+            "%SYS%\PING.EXE" -n 2 127.0.0.1 >nul
+            set /a waited+=1
+            goto wait
+
+            :force
+            echo %date% %time% Still running after {plan.WaitSeconds}s; forcing it closed.>>"%LOG%"
+            "%SYS%\taskkill.exe" /f /pid {pid} >>"%LOG%" 2>&1
+
+            :gone
+            echo %date% %time% App has exited.>>"%LOG%"
+            if exist "{backup}" del /f /q "{backup}" >nul 2>&1
 
             rem Move aside rather than delete, so a failed copy can be undone.
-            if exist "{backup}" del /f /q "{backup}"
+            rem Retried because Windows can hold the lock briefly after exit.
+            set /a tries=0
+            :move
             move /y "{target}" "{backup}" >nul 2>&1
+            if not errorlevel 1 goto moved
+            set /a tries+=1
+            if %tries% geq 10 goto keepold
+            "%SYS%\PING.EXE" -n 2 127.0.0.1 >nul
+            goto move
 
+            :keepold
+            echo %date% %time% FAILED: could not move the current exe aside. Kept the current version.>>"%LOG%"
+            {launch}
+            exit /b 1
+
+            :moved
             copy /y "{staged}" "{target}" >nul 2>&1
-            if errorlevel 1 (
-                rem Put the working build back and leave everything else alone.
-                move /y "{backup}" "{target}" >nul 2>&1
-                exit /b 1
-            )
+            if not errorlevel 1 goto copied
+            echo %date% %time% FAILED: could not copy the new exe. Restoring the current version.>>"%LOG%"
+            move /y "{backup}" "{target}" >nul 2>&1
+            {launch}
+            exit /b 1
 
+            :copied
+            echo %date% %time% Updated. Starting the new version.>>"%LOG%"
             del /f /q "{backup}" >nul 2>&1
-            start "" "{target}"
+            {launch}
 
             rem Clean the staging area last, and never fail the update over it.
             rmdir /s /q "{staging}" >nul 2>&1

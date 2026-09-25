@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Windows;
@@ -82,6 +82,16 @@ public partial class UpdateWindow : Window
             // exe, so shutting down is what lets the update proceed.
             _log("Shutting down to apply the update.");
             Application.Current.Shutdown();
+
+            // The swap cannot start until this process is gone, and a shutdown
+            // that stalls - a database lock, a stuck handler - would otherwise
+            // leave a process with no window holding the update up. A
+            // background thread, so it never keeps a clean exit waiting.
+            new Thread(() =>
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(15));
+                Environment.Exit(0);
+            }) { IsBackground = true, Name = "update-exit-watchdog" }.Start();
         }
         catch (UpdateVerificationException ex)
         {

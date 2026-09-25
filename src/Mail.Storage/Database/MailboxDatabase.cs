@@ -1,4 +1,4 @@
-using Microsoft.Data.Sqlite;
+﻿using Microsoft.Data.Sqlite;
 
 namespace Mail.Storage.Database;
 
@@ -23,9 +23,14 @@ public static class MailboxDatabase
     }
 
     /// <summary>Deletes blobs no longer referenced by any segment or attachment.</summary>
-    public static int CollectGarbageBlobs(SqliteConnection conn)
+    /// <param name="timeoutSeconds">
+    /// How long to wait for a busy database before giving up. The sweep is
+    /// optional housekeeping, so it yields rather than queueing behind a writer.
+    /// </param>
+    public static int CollectGarbageBlobs(SqliteConnection conn, int timeoutSeconds = 30)
     {
         using var cmd = conn.CreateCommand();
+        cmd.CommandTimeout = timeoutSeconds;
         cmd.CommandText = """
             DELETE FROM blobs WHERE id NOT IN (
                 SELECT blob_id FROM body_segments

@@ -1055,30 +1055,76 @@ public partial class MainWindow : Window
         return created.MasterKey;
     }
 
+    /// <summary>
+    /// Cancelled when the app closes, so running syncs stop writing instead of
+    /// carrying on behind a window that has already gone.
+    /// </summary>
+    readonly CancellationTokenSource _lifetime = new();
+
+    /// <summary>
+    /// Releases the databases on exit. Must be quick and must not wait on a
+    /// lock: this runs on the UI thread while the window is being destroyed, so
+    /// anything slow here leaves a process with no window that looks closed but
+    /// is not.
+    ///
+    /// That is exactly what used to happen. The blob sweep ran here, over a
+    /// multi-gigabyte database, while a sync was still ingesting into it on its
+    /// own connection; the two contended for the write lock and SQLite's busy
+    /// retry spun the UI thread indefinitely. The updater waits for this
+    /// process to exit before swapping the executable, so an update then never
+    /// completed. The sweep now runs after each sync instead.
+    /// </summary>
     void CloseAll()
     {
         _autoSyncTimer?.Stop();
+        _lifetime.Cancel();
+        _doorbell?.Cancel();
+
         foreach (var mailbox in _mailboxes)
         {
             try
             {
-                // Sweep blobs orphaned by deletes, then fold the WAL back into the
-                // main file so on-disk size reflects reality and a copy of the .db
-                // alone is a complete backup.
-                var swept = MailboxDatabase.CollectGarbageBlobs(mailbox.Db);
+                // Fold the WAL back so the .db alone is a complete backup - but
+                // with a short timeout, because a writer that has not noticed
+                // the cancellation yet would otherwise hold this up. Skipping it
+                // loses nothing: SQLite replays the WAL on the next open.
                 using var cmd = mailbox.Db.CreateCommand();
+                cmd.CommandTimeout = 2;
                 cmd.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
                 cmd.ExecuteNonQuery();
-                if (swept > 0)
-                    Log(LogLevel.Debug, $"{mailbox.Upn}: swept {swept:N0} orphaned blob(s).");
             }
-            catch
+            catch (Exception ex) when (ex is SqliteException or InvalidOperationException)
             {
-                // Never let housekeeping block shutdown.
+                // Busy or already closed: the checkpoint is housekeeping only.
             }
             mailbox.Db.Dispose();
         }
         _appDb?.Dispose();
+    }
+
+    /// <summary>
+    /// Deletes blobs nothing references any more. Off the UI thread, on its own
+    /// connection, with a bounded wait - it is housekeeping and must never be
+    /// the reason anything else stalls.
+    /// </summary>
+    async Task SweepBlobsAsync(MailboxHandle mailbox)
+    {
+        try
+        {
+            var swept = await Task.Run(() =>
+            {
+                using var db = MailboxDatabase.Open(mailbox.DbPath, mailbox.Dek);
+                return MailboxDatabase.CollectGarbageBlobs(db, timeoutSeconds: 60);
+            }, _lifetime.Token);
+            if (swept > 0)
+                Log(LogLevel.Debug, $"{mailbox.Upn}: swept {swept:N0} orphaned blob(s).");
+        }
+        catch (OperationCanceledException) { }
+        catch (SqliteException ex)
+        {
+            // Left for next time: orphaned blobs cost disk, not correctness.
+            Log(LogLevel.Debug, $"{mailbox.Upn}: blob sweep skipped: {ex.Message}");
+        }
     }
 
     void BuildColumnsMenu()
@@ -4349,8 +4395,16 @@ public partial class MainWindow : Window
                     mailboxAddress: mailbox.Upn);
                 // Task.Run keeps the engine (and its await continuations — page
                 // classification, MIME parsing) off the UI dispatcher entirely.
-                var stats = await Task.Run(() => sync.SyncAsync(since));
+                var stats = await Task.Run(() => sync.SyncAsync(since, _lifetime.Token));
                 stopwatch.Stop();
+
+                // Deletes and updates are what orphan blobs, so sweep only then.
+                // Here, rather than at shutdown: this mailbox's sync has just
+                // finished and cannot start again until the finally below runs,
+                // so the sweep has the database to itself instead of fighting a
+                // writer for the lock.
+                if (stats.Removed + stats.Updated > 0)
+                    await SweepBlobsAsync(mailbox);
                 UpdateTreeCounts(mailbox);
                 var summary = stats.Added + stats.Updated + stats.Removed == 0
                     ? $"Up to date ({mailbox.ScopeText}) — {stats.Folders:N0} folders checked in {stopwatch.Elapsed.TotalSeconds:N1}s"
@@ -4363,6 +4417,10 @@ public partial class MainWindow : Window
             if (FolderTree.SelectedItem is FolderNodeViewModel selected &&
                 selected.Mailbox is MailboxHandle selectedMailbox && !selected.IsGroupHeader)
                 LoadFolder(new FolderNode(selectedMailbox, selected.FolderId, selected.Name));
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
+        {
+            // Stopped because the app is closing, which is not a failure.
         }
         catch (Exception ex)
         {

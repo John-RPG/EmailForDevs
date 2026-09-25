@@ -106,6 +106,49 @@ public partial class MainWindow : Window
         /// formatted string, so sorting survives a format change.</summary>
         public DateTimeOffset? ReceivedValue { get; init; }
 
+        /// <summary>Conversation this belongs to, or null when it threads alone.</summary>
+        public string? ConversationKey { get; init; }
+
+        /// <summary>This message's own id, which replies reference.</summary>
+        public string? InternetMessageId { get; init; }
+
+        /// <summary>Ids this message replies to, oldest first.</summary>
+        public IReadOnlyList<string> References { get; init; } = [];
+
+        // ---- threading, set when conversation grouping is on ----------------
+
+        /// <summary>How deep in the thread; 0 for a message that starts one.</summary>
+        public int Depth { get; init; }
+
+        /// <summary>Direct replies, so a collapsed row can say what it hides.</summary>
+        public int ChildCount { get; init; }
+
+        /// <summary>Everything below this row, which is what collapsing removes.</summary>
+        public int DescendantCount { get; init; }
+
+        /// <summary>Whether this row begins a conversation.</summary>
+        public bool IsThreadRoot { get; init; }
+
+        /// <summary>Whether this row's replies are currently hidden.</summary>
+        public bool IsCollapsed { get; init; }
+
+        /// <summary>Indents the subject so the thread shape is visible in a flat grid.</summary>
+        public Thickness ThreadIndent => new(Depth * 16, 0, 0, 0);
+
+        /// <summary>The expander glyph, or blank when there is nothing to expand.</summary>
+        public string ThreadGlyph =>
+            ChildCount == 0 ? "" : IsCollapsed ? "▶" : "▼";
+
+        /// <summary>
+        /// What a collapsed row hides, shown beside the subject so the count is
+        /// visible without expanding.
+        /// </summary>
+        public string ThreadCount =>
+            IsCollapsed && DescendantCount > 0 ? $"({DescendantCount + 1})" : "";
+
+        public Visibility ThreadCountVisibility =>
+            ThreadCount.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+
         /// <summary>
         /// What a screen reader announces for the row, and what UI automation
         /// sees as its name. Without this the record's generated ToString()
@@ -846,6 +889,13 @@ public partial class MainWindow : Window
             LoadFavourites();
             BuildTree();
             BuildScopeBox();
+
+            // Restore the grouping choice before the first folder loads, so the
+            // list is not drawn flat and then rearranged a moment later.
+            _groupByConversation = _settings?.GetBool(
+                SettingsCatalog.GroupByConversation, SettingTarget.Application) ?? false;
+            GroupByConversationItem.IsChecked = _groupByConversation;
+
             StatusText.Text = $"{_mailboxes.Count} mailbox(es) open.";
             Log($"Profile opened: {_mailboxes.Count} mailbox(es).");
 
@@ -1163,22 +1213,28 @@ public partial class MainWindow : Window
         MessageGrid.RowHeight = double.NaN;                  // let content size it
         MessageGrid.MinRowHeight = lines * lineHeight + 4;   // padding
 
+        // The subject is a template column now, so wrapping is a property the
+        // template binds to rather than a style swapped onto the column.
         var wrap = lines > 1;
-        ColSubject.ElementStyle = wrap ? _wrappedCell : null;
+        if (SubjectWrapping != wrap)
+        {
+            SubjectWrapping = wrap;
+            // Rows already realized keep the old wrapping until rebuilt.
+            RebuildGridView();
+        }
         if (ColSubject.Width.IsStar || wrap) return;
         AutoSizeColumns();
     }
 
-    /// <summary>Subject cell for multi-line rows: wraps instead of clipping.</summary>
-    static readonly Style _wrappedCell = BuildWrappedCellStyle();
+    /// <summary>
+    /// Whether subject cells wrap, which multi-line row density turns on.
+    /// Public so the cell template can bind to it through the window.
+    /// </summary>
+    public bool SubjectWrapping { get; private set; }
 
-    static Style BuildWrappedCellStyle()
-    {
-        var style = new Style(typeof(TextBlock));
-        style.Setters.Add(new Setter(TextBlock.TextWrappingProperty, TextWrapping.Wrap));
-        style.Setters.Add(new Setter(TextBlock.VerticalAlignmentProperty, VerticalAlignment.Top));
-        return style;
-    }
+    /// <summary>The same choice as TextWrapping, which is what the cell binds to.</summary>
+    public TextWrapping SubjectTextWrapping =>
+        SubjectWrapping ? TextWrapping.Wrap : TextWrapping.NoWrap;
 
     // ---- folder tree ---------------------------------------------------------
 
@@ -1808,7 +1864,12 @@ public partial class MainWindow : Window
                (SELECT a2.email
                 FROM message_addresses ma2 JOIN addresses a2 ON a2.id = ma2.address_id
                 WHERE ma2.message_id = m.id AND ma2.kind = 1
-                ORDER BY ma2.position LIMIT 1) AS to_email
+                ORDER BY ma2.position LIMIT 1) AS to_email,
+               m.conversation_key, m.internet_message_id,
+               -- The reply chain, in the order it was recorded, so grouping can
+               -- attach a reply to the nearest ancestor it actually holds.
+               (SELECT group_concat(r.reference, char(10))
+                FROM message_references r WHERE r.message_id = m.id) AS refs
         FROM messages m
         LEFT JOIN message_addresses ma ON ma.message_id = m.id AND ma.kind = 0 AND ma.position = 0
         LEFT JOIN addresses fa ON fa.id = ma.address_id
@@ -1949,16 +2010,124 @@ public partial class MainWindow : Window
                 IsUnread: !m.IsRead)
             {
                 ReceivedValue = m.Received,
+                // Graph's own grouping, which is not the same as our reference
+                // threading - it has no Message-IDs to work from here.
+                ConversationKey = string.IsNullOrEmpty(m.ConversationId) ? null : m.ConversationId,
+                InternetMessageId = m.Id,
             });
         }
-        MessageGrid.ItemsSource = rows;
-        AutoSizeColumns();
+        ShowRows(rows);
     }
 
     void FillList(MailboxHandle mailbox, SqliteCommand cmd)
     {
-        MessageGrid.ItemsSource = ReadRows(mailbox, cmd);
+        ShowRows(ReadRows(mailbox, cmd));
+    }
+
+    // ---- conversation grouping ----------------------------------------------
+
+    /// <summary>Rows as loaded, before grouping. Kept so the view can be rebuilt
+    /// when a thread is expanded without going back to the database.</summary>
+    List<MessageRow> _loadedRows = [];
+
+    /// <summary>
+    /// Conversations the user has collapsed. Keyed by conversation rather than
+    /// by row, so a thread stays collapsed when new mail arrives in it.
+    /// </summary>
+    readonly HashSet<string> _collapsed = new(StringComparer.Ordinal);
+
+    bool _groupByConversation;
+
+    /// <summary>
+    /// Puts rows in the grid, threaded or flat depending on the setting.
+    /// Everything that fills the list goes through here so grouping cannot be
+    /// applied in some paths and forgotten in others.
+    /// </summary>
+    void ShowRows(List<MessageRow> rows)
+    {
+        _loadedRows = rows;
+        RebuildGridView();
+    }
+
+    void RebuildGridView()
+    {
+        if (!_groupByConversation)
+        {
+            MessageGrid.ItemsSource = _loadedRows;
+            AutoSizeColumns();
+            return;
+        }
+
+        var items = _loadedRows
+            .Select(r => new ConversationGrouping.Item<MessageRow>(
+                r.ConversationKey, r.InternetMessageId, r.References, r.ReceivedValue, r))
+            .ToList();
+
+        var placed = ConversationGrouping.Group(items);
+        var visible = ConversationGrouping.ApplyCollapse(
+            placed, key => key is not null && _collapsed.Contains(key));
+
+        MessageGrid.ItemsSource = visible
+            .Select(p => p.Payload with
+            {
+                Depth = p.Depth,
+                ChildCount = p.ChildCount,
+                DescendantCount = p.DescendantCount,
+                IsThreadRoot = p.IsThreadRoot,
+                IsCollapsed = p.Key is not null && _collapsed.Contains(p.Key),
+            })
+            .ToList();
         AutoSizeColumns();
+    }
+
+    /// <summary>Expands or collapses the conversation a row belongs to.</summary>
+    void ToggleThread(MessageRow row)
+    {
+        if (row.ConversationKey is not { } key || row.ChildCount == 0) return;
+        if (!_collapsed.Add(key)) _collapsed.Remove(key);
+
+        // Keep the clicked message selected across the rebuild: collapsing a
+        // thread should not move the selection somewhere unrelated.
+        var keepId = row.Id;
+        RebuildGridView();
+        var again = (MessageGrid.ItemsSource as IEnumerable<MessageRow>)?
+            .FirstOrDefault(r => r.Id == keepId);
+        if (again is not null) MessageGrid.SelectedItem = again;
+    }
+
+    /// <summary>Clicking the expander glyph toggles without changing selection first.</summary>
+    void OnThreadToggle(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: MessageRow row })
+            ToggleThread(row);
+        e.Handled = true;
+    }
+
+    void OnExpandAllThreads(object sender, RoutedEventArgs e)
+    {
+        _collapsed.Clear();
+        RebuildGridView();
+    }
+
+    void OnCollapseAllThreads(object sender, RoutedEventArgs e)
+    {
+        // Only threads that actually have replies: collapsing a single-message
+        // conversation would put an expander on a row with nothing under it.
+        foreach (var row in _loadedRows)
+            if (row.ConversationKey is { } key)
+                _collapsed.Add(key);
+        RebuildGridView();
+    }
+
+    void OnGroupByConversationChanged(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        _groupByConversation = GroupByConversationItem.IsChecked;
+        _settings?.Set(
+            SettingsCatalog.GroupByConversation.Key,
+            SettingTarget.Application,
+            _groupByConversation ? "true" : "false");
+        RebuildGridView();
     }
 
     /// <summary>
@@ -2003,6 +2172,11 @@ public partial class MainWindow : Window
                     ReceivedValue = reader.IsDBNull(2)
                         ? null
                         : DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2)),
+                    ConversationKey = reader.IsDBNull(12) ? null : reader.GetString(12),
+                    InternetMessageId = reader.IsDBNull(13) ? null : reader.GetString(13),
+                    References = reader.IsDBNull(14)
+                        ? []
+                        : reader.GetString(14).Split('\n', StringSplitOptions.RemoveEmptyEntries),
                 });
             }
         }
@@ -3651,8 +3825,7 @@ public partial class MainWindow : Window
             rows.Sort((a, b) => Nullable.Compare(b.ReceivedValue, a.ReceivedValue));
             if (rows.Count > 500) rows.RemoveRange(500, rows.Count - 500);
 
-            MessageGrid.ItemsSource = rows;
-            AutoSizeColumns();
+            ShowRows(rows);
 
             var where2 = ScopeResolver.Describe(CurrentScope).ToLowerInvariant();
             var scopeDetail = searched > 1 ? $"{where2}, {searched} mailboxes" : where2;

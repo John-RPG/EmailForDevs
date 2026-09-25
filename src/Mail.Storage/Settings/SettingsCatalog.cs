@@ -1,4 +1,4 @@
-using static Mail.Storage.Settings.SettingScope;
+﻿using static Mail.Storage.Settings.SettingScope;
 
 namespace Mail.Storage.Settings;
 
@@ -274,6 +274,19 @@ public static class SettingsCatalog
         Choices: ["single", "two-line", "three-line"],
         Category: "Display");
 
+    public static readonly SettingDefinition GroupByConversation = new(
+        "display.group_by_conversation",
+        "Group messages by conversation",
+        "Show replies indented under the message they answer, rather than as " +
+        "separate rows in date order. Threads are ordered by their newest " +
+        "message, so a conversation replied to today sits at the top even if " +
+        "it began months ago. Grouping is worked out from the reply headers " +
+        "each message carries, so a reply whose parent is not in this folder " +
+        "still appears rather than being hidden.",
+        SettingKind.Bool, "false",
+        [Folder, Mailbox, Account, Application],
+        Category: "Display");
+
     public static readonly SettingDefinition ShowInFavourites = new(
         "display.favourite",
         "Show in favourites",
@@ -497,6 +510,7 @@ public static class SettingsCatalog
         ThemeMode, ThemeMessageBodies,
         DateTimeFormat, ListDateFormat, ReaderDateFormat, ShowAddressesNotNames,
         QuietFolderDays, RowDensity, ShowInFavourites, MessageColumns,
+        GroupByConversation,
         DefaultComposeFormat, PreserveMessageId,
         SignatureSource, SignatureText, SignatureOnReply,
         ReplyQuoteStyle, ReplyAboveQuote,

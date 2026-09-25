@@ -1,4 +1,4 @@
-<Window x:Class="Mail.App.MainWindow"
+﻿<Window x:Class="Mail.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
@@ -204,6 +204,15 @@
                 <MenuItem x:Name="ViewLog" Header="Activity _log" IsCheckable="True"
                           IsChecked="True" Click="OnTogglePane" Tag="log"/>
                 <Separator/>
+                <MenuItem x:Name="GroupByConversationItem" Header="Group by _conversation"
+                          IsCheckable="True" Click="OnGroupByConversationChanged"
+                          ToolTip="Show replies indented under the message they answer"
+                          AutomationProperties.AutomationId="view-group-conversation"/>
+                <MenuItem Header="Expand all conversations" Click="OnExpandAllThreads"
+                          AutomationProperties.AutomationId="view-expand-threads"/>
+                <MenuItem Header="Collapse all conversations" Click="OnCollapseAllThreads"
+                          AutomationProperties.AutomationId="view-collapse-threads"/>
+                <Separator/>
                 <MenuItem Header="_Expand all folders" Click="OnExpandAll"/>
                 <MenuItem Header="_Collapse all folders" Click="OnCollapseAll"/>
                 <Separator/>
@@ -369,7 +378,46 @@
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
-                        <DataGridTextColumn x:Name="ColSubject" Header="Subject" Binding="{Binding Subject}" Width="*" />
+                        <!-- A template rather than a text column so the thread
+                             shape can live in it: the indent and the expander
+                             are per-row, which a DataGridTextColumn cannot do.
+                             Flat mode leaves the indent at zero and the glyph
+                             empty, so the column looks exactly as it did. -->
+                        <DataGridTemplateColumn x:Name="ColSubject" Header="Subject" Width="*"
+                                                SortMemberPath="Subject">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal" Margin="{Binding ThreadIndent}">
+                                        <!-- Button, not a ToggleButton: this drives
+                                             the collapsed set rather than its own
+                                             state, and Click fires through the
+                                             automation pattern where Toggle does not. -->
+                                        <Button Content="{Binding ThreadGlyph}"
+                                                Click="OnThreadToggle"
+                                                Focusable="False"
+                                                Padding="0" Margin="0,0,4,0"
+                                                MinWidth="14" BorderThickness="0"
+                                                Background="Transparent"
+                                                Foreground="{DynamicResource Text.Secondary}"
+                                                AutomationProperties.Name="Expand conversation"
+                                                AutomationProperties.AutomationId="thread-toggle"/>
+                                        <TextBlock Text="{Binding Subject}"
+                                                   VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   TextWrapping="{Binding SubjectTextWrapping,
+                                                       RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                        <!-- How many messages the collapsed thread
+                                             hides, so the count is readable without
+                                             expanding it. -->
+                                        <TextBlock Text="{Binding ThreadCount}"
+                                                   Visibility="{Binding ThreadCountVisibility}"
+                                                   Margin="6,0,0,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource Text.Secondary}"/>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                     </DataGrid.Columns>
                     <DataGrid.ContextMenu>
                         <ContextMenu>
@@ -580,22 +628,26 @@
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
                 <StackPanel Orientation="Horizontal">
-                    <!-- Hidden until a newer release is found. A notice rather
-                         than a dialog on launch: the app should not interrupt
-                         someone opening their mail to talk about itself. -->
-                    <Button x:Name="UpdateButton" Margin="0,0,12,0" Padding="8,1"
-                            Visibility="Collapsed" Click="OnUpdateClick"
-                            Background="{DynamicResource Accent}"
-                            Foreground="#FFFFFF"
-                            AutomationProperties.AutomationId="cmd-update"/>
                     <TextBlock x:Name="ScanLabel" Margin="0,0,12,0" VerticalAlignment="Center"
                                Foreground="{DynamicResource Text.Secondary}"/>
                     <TextBlock x:Name="SyncLabel" Margin="0,0,8,0" VerticalAlignment="Center"/>
                     <ProgressBar x:Name="SyncBar" Width="180" Height="14" VerticalAlignment="Center"/>
+                    <!-- MinWidth so switching between "Sync now" and "Syncing (n)"
+                         does not shift the progress bar and labels beside it. -->
                     <Button x:Name="SyncButton" Content="Sync now" Margin="8,0,0,0"
-                            Padding="8,1" Click="OnSyncClick"
+                            Padding="8,1" MinWidth="90" Click="OnSyncClick"
                             AutomationProperties.AutomationId="cmd-sync"/>
-
+                    <!-- Hidden until a newer release is found. A notice rather
+                         than a dialog on launch: the app should not interrupt
+                         someone opening their mail to talk about itself. Last in
+                         the bar: the panel is right-aligned, so the last item holds
+                         its place while the sync labels change width with every tick;
+                         first, it moved with them. -->
+                    <Button x:Name="UpdateButton" Margin="8,0,0,0" Padding="8,1"
+                            Visibility="Collapsed" Click="OnUpdateClick"
+                            Background="{DynamicResource Accent}"
+                            Foreground="#FFFFFF"
+                            AutomationProperties.AutomationId="cmd-update"/>
                 </StackPanel>
             </StatusBarItem>
         </StatusBar>

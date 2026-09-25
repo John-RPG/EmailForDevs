@@ -1,3 +1,4 @@
+using Mail.Core.Search;
 // Full vertical slice: profile keys (DPAPI + recovery) → encrypted app.db →
 // mailbox registry with per-mailbox DEK → MSAL auth → Graph delta sync into the
 // encrypted mailbox DB → stats and a sample FTS search.
@@ -774,6 +775,84 @@ if (args.Length > 0 && args[0].Equals("fixpaths", StringComparison.OrdinalIgnore
         Console.WriteLine($"updated {u.Upn}");
     }
     Console.WriteLine($"\n{updates.Count} row(s) rewritten.");
+    return;
+}
+
+if (args.Length > 0 && args[0].Equals("threadprobe", StringComparison.OrdinalIgnoreCase))
+{
+    // Groups a real folder's messages and prints the thread shape, so the
+    // algorithm is checked against genuine reply chains rather than fixtures.
+    var want = args.Length > 1 ? args[1] : "";
+    foreach (var entry in MailboxRegistry.List(appDb))
+    {
+        if (want.Length > 0 && !entry.Upn.Contains(want, StringComparison.OrdinalIgnoreCase)) continue;
+        var dbPath = Path.IsPathRooted(entry.DbPath) ? entry.DbPath : Path.Combine(root, entry.DbPath);
+        if (!File.Exists(dbPath)) continue;
+        using var db = MailboxDatabase.Open(dbPath, entry.Dek);
+
+        // The folder with the most threading potential: most messages that
+        // actually carry references.
+        long folderId = 0; var folderName = ""; var best = 0;
+        using (var find = db.CreateCommand())
+        {
+            find.CommandText = """
+                SELECT f.id, f.name, COUNT(DISTINCT r.message_id) AS threaded
+                FROM folders f
+                JOIN messages m ON m.folder_id = f.id
+                JOIN message_references r ON r.message_id = m.id
+                GROUP BY f.id ORDER BY threaded DESC LIMIT 1;
+                """;
+            using var rd = find.ExecuteReader();
+            if (rd.Read()) { folderId = rd.GetInt64(0); folderName = rd.GetString(1); best = rd.GetInt32(2); }
+        }
+        if (folderId == 0) { Console.WriteLine($"{entry.Upn}: no threaded messages"); continue; }
+
+        var items = new List<ConversationGrouping.Item<string>>();
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT m.id, m.subject, m.received_at, m.conversation_key, m.internet_message_id,
+                       (SELECT group_concat(r.reference, char(10))
+                        FROM message_references r WHERE r.message_id = m.id)
+                FROM messages m WHERE m.folder_id = @f
+                ORDER BY m.received_at DESC LIMIT 400;
+                """;
+            cmd.Parameters.AddWithValue("@f", folderId);
+            using var rd = cmd.ExecuteReader();
+            while (rd.Read())
+                items.Add(new ConversationGrouping.Item<string>(
+                    rd.IsDBNull(3) ? null : rd.GetString(3),
+                    rd.IsDBNull(4) ? null : rd.GetString(4),
+                    rd.IsDBNull(5) ? [] : rd.GetString(5).Split('\n', StringSplitOptions.RemoveEmptyEntries),
+                    rd.IsDBNull(2) ? null : DateTimeOffset.FromUnixTimeSeconds(rd.GetInt64(2)),
+                    rd.IsDBNull(1) ? "(no subject)" : rd.GetString(1)));
+        }
+
+        var placed = ConversationGrouping.Group(items);
+        Console.WriteLine($"=== {entry.Upn} / {folderName} ({best} threaded msgs) ===");
+        Console.WriteLine($"  loaded {items.Count}, placed {placed.Count}  " +
+                          (items.Count == placed.Count ? "NO MESSAGE LOST" : "!!! COUNT MISMATCH"));
+        var deepest = placed.Count == 0 ? 0 : placed.Max(p => p.Depth);
+        var threads = placed.Count(p => p.IsThreadRoot);
+        var nested = placed.Count(p => p.Depth > 0);
+        Console.WriteLine($"  threads {threads}, nested rows {nested}, deepest {deepest}");
+
+        // Show the biggest thread, which is where nesting is visible.
+        var biggest = placed.Where(p => p.IsThreadRoot)
+            .OrderByDescending(p => p.DescendantCount).FirstOrDefault();
+        if (biggest is not null && biggest.DescendantCount > 0)
+        {
+            var start = placed.IndexOf(biggest);
+            Console.WriteLine($"  largest thread ({biggest.DescendantCount + 1} messages):");
+            for (var i = start; i < placed.Count && i <= start + biggest.DescendantCount; i++)
+            {
+                var row = placed[i];
+                var subject = row.Payload.Length > 54 ? row.Payload[..54] : row.Payload;
+                Console.WriteLine($"      {new string(' ', row.Depth * 3)}{(row.Depth > 0 ? "+- " : "")}{subject}");
+            }
+        }
+        Console.WriteLine();
+    }
     return;
 }
 

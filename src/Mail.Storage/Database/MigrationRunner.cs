@@ -8,7 +8,8 @@ namespace Mail.Storage.Database;
 /// </summary>
 public static class MigrationRunner
 {
-    public static void Apply(SqliteConnection conn, IReadOnlyList<string> migrations)
+    /// <returns>Whether any migration ran.</returns>
+    public static bool Apply(SqliteConnection conn, IReadOnlyList<string> migrations)
     {
         int current;
         using (var read = conn.CreateCommand())
@@ -28,5 +29,6 @@ public static class MigrationRunner
             cmd.ExecuteNonQuery();
             tx.Commit();
         }
+        return current < migrations.Count;
     }
 }

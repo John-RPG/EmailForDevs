@@ -18,8 +18,14 @@ public static class MailboxDatabase
     public static SqliteConnection Open(string path, ReadOnlySpan<byte> dek)
     {
         var conn = EncryptedSqlite.Open(path, dek);
-        MigrationRunner.Apply(conn, Migrations);
-        return conn;
+        if (!MigrationRunner.Apply(conn, Migrations)) return conn;
+
+        // A connection keeps the planner statistics it read when it opened,
+        // and deleting a table's statistics does not reset them (V6 does
+        // exactly that). Reconnect so nothing runs on what the migrations
+        // replaced. Pooling is off, so this really is a new connection.
+        conn.Dispose();
+        return EncryptedSqlite.Open(path, dek);
     }
 
     /// <summary>Deletes blobs no longer referenced by any segment or attachment.</summary>
@@ -41,13 +47,42 @@ public static class MailboxDatabase
         return cmd.ExecuteNonQuery();
     }
 
-    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4];
+    static readonly IReadOnlyList<string> Migrations = [V1, V2, V3, V4, V5, V6];
+
+    const string V6 = """
+        -- V4's ANALYZE ran at creation on every mailbox made since it was
+        -- added, while the tables were still empty. The full-text index's data
+        -- table was recorded as holding 2 rows, so the planner scanned it in
+        -- full rather than seek by rowid - and FTS5 deletes from it by rowid
+        -- range every time it merges segments. On a 125k-message mailbox that
+        -- made each merge take seconds of decryption, and sync merges every
+        -- few messages, pinning a core for the whole sync.
+        --
+        -- FTS5 only ever reaches its tables by primary key, which needs no
+        -- statistics, so they are dropped rather than recomputed: recomputing
+        -- on a new, empty mailbox would record the same mistake. ANALYZE
+        -- sqlite_schema only makes sure the statistics table exists. The
+        -- connection that ran this still holds the old figures in memory, so
+        -- Open reconnects after migrating.
+        ANALYZE sqlite_schema;
+        DELETE FROM sqlite_stat1 WHERE tbl LIKE 'messages\_fts\_%' ESCAPE '\';
+        """;
+
+    const string V5 = """
+        -- Delta sync looks every incoming message up by its server id. With no
+        -- index each lookup scanned - and, under SQLCipher, decrypted - the
+        -- whole messages table, which kept several cores flat out for as long
+        -- as a sync ran. No ANALYZE: an equality lookup uses the index without
+        -- statistics, and re-analysing a large table would cost a slow start.
+        CREATE INDEX ix_messages_server_id ON messages(server_id);
+        """;
 
     const string V4 = """
         -- Folder/unread rollups run on every tree refresh; without a covering
         -- index that is a full scan of a six-figure messages table.
+        -- This used to end with ANALYZE, which on a brand-new mailbox recorded
+        -- near-empty tables as statistics that never changed again; see V6.
         CREATE INDEX ix_messages_folder_read ON messages(folder_id, is_read);
-        ANALYZE;
         """;
 
     const string V3 = """

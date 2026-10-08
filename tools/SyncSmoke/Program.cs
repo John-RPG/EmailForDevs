@@ -50,6 +50,323 @@ else
 
 using var appDb = AppDatabase.Open(Path.Combine(profileDir, "app.db"), masterKey);
 
+if (args.Length > 1 && args[0].Equals("commitprobe", StringComparison.OrdinalIgnoreCase))
+{
+    // Splits the cost of an ingest COMMIT into its parts, on a COPY of a real
+    // mailbox (never the original): an empty transaction, one FTS row, one
+    // blob, and both. Usage: commitprobe <upn-substring> [rounds]
+    var entry = MailboxRegistry.List(appDb).First(m =>
+        m.Upn.Contains(args[1], StringComparison.OrdinalIgnoreCase) && !m.Upn.Contains("--"));
+    var source = Path.IsPathRooted(entry.DbPath) ? entry.DbPath : Path.GetFullPath(entry.DbPath);
+    var rounds = args.Length > 2 && int.TryParse(args[2], out var r) ? r : 40;
+    var copy = Path.Combine(root, "probe", Path.GetFileName(source));
+    Directory.CreateDirectory(Path.GetDirectoryName(copy)!);
+    foreach (var suffix in new[] { "", "-wal", "-shm" })
+    {
+        File.Delete(copy + suffix);
+        if (File.Exists(source + suffix)) File.Copy(source + suffix, copy + suffix);
+    }
+    Console.WriteLine($"{entry.Upn}: copied {new FileInfo(copy).Length / 1048576.0:N0} MB to {copy}");
+
+    using var db = MailboxDatabase.Open(copy, entry.Dek);
+    long ProbeScalar(string sql)
+    {
+        using var c = db.CreateCommand(); c.CommandText = sql;
+        return Convert.ToInt64(c.ExecuteScalar());
+    }
+    Console.WriteLine($"  messages {ProbeScalar("SELECT count(*) FROM messages"):N0}, " +
+        $"fts data rows {ProbeScalar("SELECT count(*) FROM messages_fts_data"):N0}, " +
+        $"page size {ProbeScalar("PRAGMA page_size")}, wal_autocheckpoint {ProbeScalar("PRAGMA wal_autocheckpoint")}");
+
+    string body;
+    using (var c = db.CreateCommand())
+    {
+        c.CommandText = "SELECT body_text FROM messages_fts ORDER BY rowid DESC LIMIT 1;";
+        body = c.ExecuteScalar() as string ?? "";
+    }
+    var blob = RandomNumberGenerator.GetBytes(60_000);
+    var rowid = ProbeScalar("SELECT max(rowid) FROM messages_fts") + 1_000_000;
+
+    void ProbeTime(string label, Action<SqliteTransaction> work)
+    {
+        var total = Stopwatch.StartNew();
+        var commit = new Stopwatch();
+        for (var i = 0; i < rounds; i++)
+        {
+            using var tx = db.BeginTransaction();
+            work(tx);
+            commit.Start(); tx.Commit(); commit.Stop();
+        }
+        total.Stop();
+        Console.WriteLine($"  {label,-22} {total.Elapsed.TotalMilliseconds / rounds,8:N1} ms/txn, " +
+            $"of which commit {commit.Elapsed.TotalMilliseconds / rounds,8:N1} ms");
+    }
+    void ProbeFts(SqliteTransaction tx)
+    {
+        using var c = db.CreateCommand(); c.Transaction = tx;
+        c.CommandText = "INSERT INTO messages_fts(rowid, subject, body_text, participants) VALUES(@id, 'probe', @b, 'probe@example.com');";
+        c.Parameters.AddWithValue("@id", rowid++); c.Parameters.AddWithValue("@b", body);
+        c.ExecuteNonQuery();
+    }
+    void ProbeBlob(SqliteTransaction tx)
+    {
+        blob[0]++; blob[1] = (byte)rowid; rowid++;
+        using var c = db.CreateCommand(); c.Transaction = tx;
+        c.CommandText = "INSERT INTO blobs(sha256, compression, content, size) VALUES(@h, 'none', @c, @s);";
+        c.Parameters.AddWithValue("@h", SHA256.HashData(blob)); c.Parameters.AddWithValue("@c", blob);
+        c.Parameters.AddWithValue("@s", blob.Length);
+        c.ExecuteNonQuery();
+    }
+    Console.WriteLine($"  body sample {body.Length:N0} chars, blob {blob.Length:N0} bytes, {rounds} rounds each");
+    if (!args.Contains("single", StringComparer.OrdinalIgnoreCase)) {
+    ProbeTime("empty", _ => { });
+    ProbeTime("fts row", ProbeFts);
+    ProbeTime("blob", ProbeBlob);
+    ProbeTime("fts row + blob", tx => { ProbeFts(tx); ProbeBlob(tx); });
+    Console.WriteLine($"  wal now {new FileInfo(copy + "-wal").Length / 1048576.0:N1} MB");
+    }
+
+    // FTS5 data rowids are segid<<37 | height<<31 | page; ids below that
+    // range are the averages and structure records.
+    void Segments(string when)
+    {
+        using var c = db.CreateCommand();
+        c.CommandText = """
+            SELECT count(DISTINCT id >> 37), count(*), sum(length(block))
+            FROM messages_fts_data WHERE id >= (1 << 37);
+            """;
+        using var rd = c.ExecuteReader(); rd.Read();
+        long structure;
+        using (var s = db.CreateCommand())
+        {
+            s.CommandText = "SELECT length(block) FROM messages_fts_data WHERE id = 10;";
+            structure = Convert.ToInt64(s.ExecuteScalar());
+        }
+        Console.WriteLine($"  {when}: {rd.GetInt64(0):N0} segments, {rd.GetInt64(1):N0} pages, " +
+            $"{rd.GetInt64(2) / 1048576.0:N0} MB, structure record {structure:N0} bytes");
+        using (var s = db.CreateCommand())
+        {
+            s.CommandText = "SELECT block FROM messages_fts_data WHERE id = 10;";
+            var rec = (byte[])s.ExecuteScalar()!;
+            var pos = 4; // skip the cookie
+            long V()
+            {
+                long v = 0;
+                for (var i = 0; i < 9; i++)
+                {
+                    var b = rec[pos++];
+                    if (i == 8) return (v << 8) | b;
+                    v = (v << 7) | (uint)(b & 0x7f);
+                    if ((b & 0x80) == 0) return v;
+                }
+                return v;
+            }
+            var v2 = rec.Length >= 8 && rec[4] == 0xff && rec[5] == 0xff && rec[6] == 0xff && rec[7] == 0xff;
+            if (v2) pos += 4;
+            var nLevel = V(); var nSeg = V(); var nWrite = V();
+            Console.WriteLine($"    structure{(v2 ? " (v2)" : "")}: levels {nLevel}, segments {nSeg}, write counter {nWrite}");
+            for (var lvl = 0; lvl < nLevel; lvl++)
+            {
+                var nMerge = V(); var n = V();
+                var segs = new List<string>();
+                for (var k = 0; k < n; k++)
+                {
+                    var id = V(); var first = V(); var last = V();
+                    if (v2) { V(); V(); V(); V(); V(); }
+                    segs.Add($"{id}:{last - first + 1}p");
+                }
+                if (n > 0 || nMerge > 0)
+                    Console.WriteLine($"    level {lvl}: merging {nMerge}, segs [{string.Join(' ', segs)}]");
+            }
+        }
+    }
+    Segments("fts before");
+
+    // Page-cache counters per commit: misses are pages read (and, under
+    // SQLCipher, decrypted); writes are pages written.
+    const int CacheHit = 7, CacheMiss = 8, CacheWrite = 9;
+    long Stat(int op)
+    {
+        SQLitePCL.raw.sqlite3_db_status(db.Handle, op, out var cur, out _, 1);
+        return cur;
+    }
+    void Pages(string label, Action<SqliteTransaction> work)
+    {
+        Stat(CacheHit); Stat(CacheMiss); Stat(CacheWrite);
+        var sw = Stopwatch.StartNew();
+        for (var i = 0; i < rounds; i++)
+        {
+            using var tx = db.BeginTransaction();
+            work(tx);
+            tx.Commit();
+        }
+        Console.WriteLine($"  {label,-22} {sw.Elapsed.TotalMilliseconds / rounds,8:N1} ms/txn  " +
+            $"hits {Stat(CacheHit) / rounds,7:N0}  misses {Stat(CacheMiss) / rounds,7:N0}  writes {Stat(CacheWrite) / rounds,5:N0}  per txn");
+    }
+    var fullBody = body;
+    void Sql(string sql) { using var c = db.CreateCommand(); c.CommandText = sql; c.ExecuteNonQuery(); }
+    if (args.Contains("diag", StringComparer.OrdinalIgnoreCase))
+    {
+        foreach (var pragma in new[] { "auto_vacuum", "secure_delete", "freelist_count", "page_count", "cache_size", "journal_mode", "synchronous", "cipher_version", "cipher_page_size", "cipher_memory_security" })
+        {
+            try
+            {
+                using var c = db.CreateCommand(); c.CommandText = $"PRAGMA {pragma};";
+                Console.WriteLine($"  {pragma,-24} {c.ExecuteScalar()}");
+            }
+            catch (Exception ex) { Console.WriteLine($"  {pragma,-24} ({ex.Message})"); }
+        }
+        using (var c = db.CreateCommand())
+        {
+            c.CommandText = "SELECT type, name, sql FROM sqlite_schema WHERE name LIKE 'messages_fts%' OR name LIKE 'sqlite_stat%' ORDER BY name;";
+            using var rd = c.ExecuteReader();
+            while (rd.Read()) Console.WriteLine($"  schema {rd.GetString(0)} {rd.GetString(1)}: {(rd.IsDBNull(2) ? "" : rd.GetString(2))}");
+        }
+        try
+        {
+            using var c = db.CreateCommand();
+            c.CommandText = "SELECT tbl, idx, stat FROM sqlite_stat1 ORDER BY tbl;";
+            using var rd = c.ExecuteReader();
+            while (rd.Read()) Console.WriteLine($"  stat1 {rd.GetString(0)} {(rd.IsDBNull(1) ? "-" : rd.GetString(1))}: {rd.GetString(2)}");
+        }
+        catch (SqliteException ex) { Console.WriteLine($"  stat1: {ex.Message}"); }
+        using (var c = db.CreateCommand())
+        {
+            c.CommandText = "EXPLAIN QUERY PLAN DELETE FROM messages_fts_data WHERE id>=@a AND id<=@b;";
+            c.Parameters.AddWithValue("@a", 1L << 40); c.Parameters.AddWithValue("@b", (1L << 40) + 5);
+            using var rd = c.ExecuteReader();
+            while (rd.Read()) Console.WriteLine($"  plan: {rd.GetString(3)}");
+        }
+        using (var fresh = MailboxDatabase.Open(copy, entry.Dek))
+        using (var c = fresh.CreateCommand())
+        {
+            c.CommandText = "EXPLAIN QUERY PLAN DELETE FROM messages_fts_data WHERE id>=1 AND id<=5;";
+            using var rd = c.ExecuteReader();
+            while (rd.Read()) Console.WriteLine($"  plan (new connection): {rd.GetString(3)}");
+        }
+        // Deleting a range that holds nothing: if this is slow, the cost is
+        // finding the range, not removing rows.
+        foreach (var (label, sql) in new[]
+        {
+            ("delete empty range", "DELETE FROM messages_fts_data WHERE id>=@a AND id<=@b;"),
+            ("select empty range", "SELECT count(*) FROM messages_fts_data WHERE id>=@a AND id<=@b;"),
+        })
+        {
+            Stat(CacheMiss);
+            var sw = Stopwatch.StartNew();
+            using var tx = db.BeginTransaction();
+            using (var c = db.CreateCommand())
+            {
+                c.Transaction = tx; c.CommandText = sql;
+                c.Parameters.AddWithValue("@a", 999L << 37); c.Parameters.AddWithValue("@b", (1000L << 37) - 1);
+                c.ExecuteNonQuery();
+            }
+            var stmt = sw.ElapsedMilliseconds;
+            var misses = Stat(CacheMiss);
+            tx.Commit();
+            Console.WriteLine($"  {label,-20} {stmt} ms, {misses:N0} page reads (commit +{sw.ElapsedMilliseconds - stmt} ms)");
+        }
+        return;
+    }
+    var single = Array.FindIndex(args, a => a.Equals("single", StringComparison.OrdinalIgnoreCase));
+    if (single >= 0)
+    {
+        // One change only, on an untouched copy, then per-commit page reads -
+        // so an average cannot hide one huge commit among cheap ones.
+        var batchArg = args.FirstOrDefault(a => a.StartsWith("batch=", StringComparison.OrdinalIgnoreCase));
+        if (batchArg is not null)
+        {
+            // N rows per transaction: does the merge cost follow commits or rows?
+            var size = int.Parse(batchArg[6..]);
+            Stat(CacheMiss);
+            var all = Stopwatch.StartNew();
+            var perBatch = new List<string>();
+            for (var i = 0; i < rounds; i++)
+            {
+                var sw = Stopwatch.StartNew();
+                using var tx = db.BeginTransaction();
+                for (var k = 0; k < size; k++) ProbeFts(tx);
+                tx.Commit();
+                perBatch.Add($"{sw.ElapsedMilliseconds}ms/{Stat(CacheMiss)}");
+            }
+            Console.WriteLine($"  batch {size}: {all.Elapsed.TotalMilliseconds / (rounds * size):N2} ms perBatch row over {rounds * size} rows");
+            Console.WriteLine($"  perBatch commit (time/misses): {string.Join(' ', perBatch)}");
+            Segments("after");
+            return;
+        }
+        if (single + 1 < args.Length && args[single + 1] != "none")
+        {
+            var kv = args[single + 1].Split('=');
+            Sql($"INSERT INTO messages_fts(messages_fts, rank) VALUES('{kv[0]}', {int.Parse(kv[1])});");
+            Console.WriteLine($"  set {kv[0]}={kv[1]}");
+        }
+        // Statements FTS5 runs internally show up here too, with their cost.
+        var slow = new List<(long Ns, string Sql)>();
+        if (args.Contains("trace", StringComparer.OrdinalIgnoreCase))
+            SQLitePCL.raw.sqlite3_profile(db.Handle, (_, sql, ns) =>
+            {
+                if (ns > 20_000_000) lock (slow) slow.Add((ns, sql.utf8_to_string()));
+            }, null);
+        Stat(CacheMiss);
+        var per = new List<string>();
+        for (var i = 0; i < rounds; i++)
+        {
+            var sw = Stopwatch.StartNew();
+            using var tx = db.BeginTransaction();
+            ProbeFts(tx);
+            tx.Commit();
+            per.Add($"{sw.ElapsedMilliseconds}ms/{Stat(CacheMiss)}");
+        }
+        Console.WriteLine($"  per commit (time/misses): {string.Join(' ', per)}");
+        foreach (var (ns, sql) in slow.OrderByDescending(s => s.Ns).Take(15))
+            Console.WriteLine($"  slow {ns / 1e6,8:N0} ms  {sql}");
+        Segments("after");
+        return;
+    }
+    if (args.Contains("experiments", StringComparer.OrdinalIgnoreCase))
+    {
+        // Is it this index's contents, or any FTS5 table in this file?
+        Sql("CREATE VIRTUAL TABLE probe_fts USING fts5(subject, body_text, participants);");
+        Pages("fresh fts5 table", tx =>
+        {
+            using var c = db.CreateCommand(); c.Transaction = tx;
+            c.CommandText = "INSERT INTO probe_fts(rowid, subject, body_text, participants) VALUES(@id, 'probe', @b, 'p');";
+            c.Parameters.AddWithValue("@id", rowid++); c.Parameters.AddWithValue("@b", body);
+            c.ExecuteNonQuery();
+        });
+        Pages("fts row (baseline)", ProbeFts);
+        Sql("INSERT INTO messages_fts(messages_fts, rank) VALUES('automerge', 0);");
+        Pages("fts row, automerge=0", ProbeFts);
+        Sql("INSERT INTO messages_fts(messages_fts, rank) VALUES('automerge', 4);");
+        Sql("INSERT INTO messages_fts(messages_fts, rank) VALUES('crisismerge', 1000);");
+        Pages("fts row, crisismerge=1000", ProbeFts);
+        return;
+    }
+    Pages("fts row", ProbeFts);
+    body = "x";
+    Pages("fts row, 1-word body", ProbeFts);
+    body = fullBody;
+    using (var c = db.CreateCommand()) { c.CommandText = "PRAGMA cache_size = -262144;"; c.ExecuteNonQuery(); }
+    Pages("fts row, 256MB cache", ProbeFts);
+    Pages("fts row, cache warm", ProbeFts);
+    if (args.Contains("optimize", StringComparer.OrdinalIgnoreCase))
+    {
+        var opt = Stopwatch.StartNew();
+        using (var c = db.CreateCommand())
+        {
+            c.CommandText = "INSERT INTO messages_fts(messages_fts) VALUES('optimize');";
+            c.CommandTimeout = 0;
+            c.ExecuteNonQuery();
+        }
+        Console.WriteLine($"  optimize took {opt.Elapsed.TotalSeconds:N1} s");
+        Segments("fts after");
+        ProbeTime("fts row (optimized)", ProbeFts);
+        ProbeTime("fts row (again)", ProbeFts);
+        Segments("fts after rows");
+    }
+    return;
+}
+
 if (args.Contains("junk", StringComparer.OrdinalIgnoreCase))
 {
     // Lists recent items directly from named folders. $search skips Junk on

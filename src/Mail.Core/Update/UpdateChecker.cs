@@ -104,15 +104,16 @@ public sealed class UpdateChecker(HttpClient http, string owner, string repo)
     /// Whether <paramref name="candidate"/> should be offered over
     /// <paramref name="running"/>.
     ///
-    /// Only the first three components are compared. The build number is left
-    /// out because the running assembly reports a four-part version whose last
-    /// part is always zero, while a tag has three parts — comparing all four
-    /// would make 0.2.0 look older than 0.2.0.0.
+    /// All four components count, because every build is stamped with its own
+    /// build and revision numbers and two builds on the same day differ only
+    /// in the last one. A missing component reads as zero: older tags have
+    /// three parts while the running assembly always reports four, and
+    /// <see cref="Version"/> itself ranks 0.2.0 below 0.2.0.0.
     /// </summary>
     public static bool IsNewer(Version candidate, Version running)
     {
         static Version Normalise(Version v) =>
-            new(v.Major, v.Minor, v.Build < 0 ? 0 : v.Build);
+            new(v.Major, v.Minor, Math.Max(v.Build, 0), Math.Max(v.Revision, 0));
         return Normalise(candidate) > Normalise(running);
     }
 }

@@ -119,4 +119,22 @@ public sealed class UpdateCheckerTests
         Assert.False(UpdateChecker.IsNewer(new Version(0, 1, 0), new Version(0, 1, 0, 0)));
         Assert.True(UpdateChecker.IsNewer(new Version(0, 1, 1), new Version(0, 1, 0, 0)));
     }
+
+    [Fact]
+    public void Orders_clock_stamped_builds_from_the_same_day()
+    {
+        // Builds are stamped days.half-seconds, so a later build that day
+        // differs only in the revision.
+        var morning = new Version(1, 0, 9777, 16000);
+        Assert.True(UpdateChecker.IsNewer(new Version(1, 0, 9777, 16001), morning));
+        Assert.False(UpdateChecker.IsNewer(new Version(1, 0, 9777, 15999), morning));
+        Assert.True(UpdateChecker.IsNewer(new Version(1, 0, 9778, 0), morning));
+    }
+
+    [Fact]
+    public void Offers_the_first_stamped_build_to_old_three_part_installs()
+    {
+        Assert.True(UpdateChecker.IsNewer(
+            UpdateChecker.ParseVersion("v1.0.9777.16000")!, new Version(0, 1, 8, 0)));
+    }
 }

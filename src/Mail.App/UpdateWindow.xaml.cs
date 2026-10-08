@@ -35,7 +35,7 @@ public partial class UpdateWindow : Window
         Headline.Text = $"eeeMail {release.Tag} is available";
         AssetLine.Text =
             $"{release.AssetName}  ({release.SizeBytes / 1024.0 / 1024.0:N0} MB)\n" +
-            $"installed: {running?.ToString(3) ?? "unknown"}   →   new: {release.Version.ToString(3)}";
+            $"installed: {running?.ToString() ?? "unknown"}   →   new: {release.Version.ToString()}";
 
         DigestLine.Text = release.Sha256 is { Length: 64 }
             ? $"SHA-256 {release.Sha256}\nchecked after download; the file is discarded if it differs"

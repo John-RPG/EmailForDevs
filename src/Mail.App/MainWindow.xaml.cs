@@ -745,10 +745,10 @@ public partial class MainWindow : Window
             {
                 _availableUpdate = null;
                 UpdateButton.Visibility = Visibility.Collapsed;
-                Log($"Up to date ({running.ToString(3)}).");
+                Log($"Up to date ({running.ToString()}).");
                 if (announceResult)
                     MessageBox.Show(this,
-                        $"eeeMail {running.ToString(3)} is the latest release.",
+                        $"eeeMail {running.ToString()} is the latest release.",
                         "No update available", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }

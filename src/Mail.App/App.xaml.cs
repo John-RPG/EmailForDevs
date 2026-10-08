@@ -86,7 +86,7 @@ public partial class App : Application
         try
         {
             var version = System.Reflection.Assembly.GetExecutingAssembly()
-                .GetName().Version?.ToString(3) ?? "dev";
+                .GetName().Version?.ToString() ?? "dev";
             var window = new CrashWindow(exception, version, ReportRepository, fatal)
             {
                 // Owner only when there is a live one: during shutdown the main

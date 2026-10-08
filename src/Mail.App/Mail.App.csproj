@@ -30,11 +30,21 @@
     <AssemblyName>eeeMail</AssemblyName>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
 
-    <!-- The single source of truth for the running version. The updater
-         compares this against the latest GitHub release tag, so a release must
-         bump it here or the new build will not recognise itself as newer. -->
-    <Version>0.1.8</Version>
-    <InformationalVersion>0.1.8</InformationalVersion>
+    <!-- Every build gets a new, higher version: Major.Minor are set by hand
+         here, and the last two parts are stamped from the clock at build time -
+         days since 2000-01-01, then half-seconds since midnight, both UTC.
+         The same scheme as the "1.0.*" wildcard, but in UTC so a daylight-
+         saving change cannot make a later build number lower, and applied to
+         every version attribute rather than only AssemblyVersion. One clock
+         reading feeds both parts, so a build at midnight cannot pair one day's
+         date with the next day's time. The release is tagged from the built
+         exe's version, so nothing needs bumping by hand. -->
+    <VersionMajorMinor>1.0</VersionMajorMinor>
+    <_StampTicks>$([System.DateTime]::UtcNow.Ticks)</_StampTicks>
+    <_StampSince2000>$([MSBuild]::Subtract($(_StampTicks), 630822816000000000))</_StampSince2000>
+    <_StampDays>$([System.Math]::Floor($([MSBuild]::Divide($(_StampSince2000), 864000000000))))</_StampDays>
+    <_StampHalfSeconds>$([System.Math]::Floor($([MSBuild]::Divide($([MSBuild]::Modulo($(_StampSince2000), 864000000000)), 20000000))))</_StampHalfSeconds>
+    <Version>$(VersionMajorMinor).$(_StampDays).$(_StampHalfSeconds)</Version>
     <Product>eeeMail</Product>
     <Company>John Hadlow</Company>
   </PropertyGroup>

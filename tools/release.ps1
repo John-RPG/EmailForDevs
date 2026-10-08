@@ -4,10 +4,10 @@
     the updater and the installer will read it.
 
 .DESCRIPTION
-    Every release gets a new version, without anyone having to remember to
-    bump it: if the version in Mail.App.csproj has already been released, the
-    patch number is incremented. A version set higher by hand (a minor or
-    major bump) is used as it is.
+    Every build stamps its own version (see Mail.App.csproj), so a release is
+    tagged with whatever the published exe says it is - there is nothing to
+    bump. The script refuses to release a version that is not newer than the
+    current latest release, which would only happen with a wrong clock.
 
     Two things consume a release: the in-app updater (UpdateChecker) and
     install.ps1. Both select the asset whose name ends in "win-x64.zip" and
@@ -21,10 +21,11 @@
     the consumers use. A release that fails that check is reported, not
     assumed good.
 
-    The version bump is committed and pushed, and the release is tagged at
-    that exact commit. Without an explicit target GitHub tags whatever the
-    remote branch points at, which is not the code that was built if the
-    local branch was ahead.
+    The release is tagged at the exact commit that was built, after pushing
+    it. Without an explicit target GitHub tags whatever the remote branch
+    points at, which is not the built code if the local branch was ahead. For
+    the same reason the source must have no uncommitted changes: they would
+    be in the exe but not in the tagged commit.
 
 .EXAMPLE
     .\tools\release.ps1 -NotesFile .scratch\notes.md
@@ -45,72 +46,33 @@ $ProjectPath = 'src\Mail.App\Mail.App.csproj'
 
 if (-not (Test-Path $NotesFile)) { throw "Notes file not found: $NotesFile" }
 
-# The bump commit must contain only the version change, so the project file
-# itself must have nothing else pending.
-git diff --quiet HEAD -- $ProjectPath
-if ($LASTEXITCODE -ne 0) { throw "$ProjectPath has uncommitted changes; commit or stash them first." }
-
-function Test-Released([string] $tag) {
-    # Windows PowerShell turns redirected native stderr into an error record,
-    # which 'Stop' then throws - so "release not found", the expected answer
-    # for a new tag, would abort the script. Local to this function.
-    $ErrorActionPreference = 'Continue'
-    gh release view $tag --repo $Repository 2>$null | Out-Null
-    return ($LASTEXITCODE -eq 0)
-}
-
-[xml] $project = Get-Content $ProjectPath
-$current = [version](($project.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1).Version)
-if (-not $current) { throw "No <Version> in $ProjectPath." }
-
-$version = $current
-while (Test-Released "v$version") {
-    $version = [version]::new($version.Major, $version.Minor, $version.Build + 1)
-}
-$tag = "v$version"
-if ($version -ne $current) { Write-Output "v$current is already released; this release is $tag" }
-else { Write-Output "Releasing $tag" }
+$dirty = git status --porcelain -- src tests
+if ($dirty) { throw "Uncommitted changes under src or tests; commit them first:`n$($dirty -join "`n")" }
 
 Write-Output 'Running tests...'
 dotnet test --nologo -v quiet
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed; not releasing.' }
 
-function Set-ProjectVersion([version] $value) {
-    # Text replacement rather than an XML round trip, which would reformat the
-    # file. Written back as UTF-8 with BOM, as the project file already is.
-    $path = (Resolve-Path $ProjectPath).Path
-    $text = [IO.File]::ReadAllText($path)
-    $text = $text -replace '<Version>[^<]*</Version>', "<Version>$value</Version>"
-    $text = $text -replace '<InformationalVersion>[^<]*</InformationalVersion>', "<InformationalVersion>$value</InformationalVersion>"
-    [IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding $true))
+$out = '.scratch\release'
+Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
+Write-Output 'Publishing self-contained build...'
+dotnet publish $ProjectPath -c Release -p:PublishSingleFile=true -o "$out\publish" --nologo -v quiet
+if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
+
+# FileVersion rather than ProductVersion: the latter carries "+<commit>".
+$exe = "$out\publish\eeeMail.exe"
+$version = [version](Get-Item $exe).VersionInfo.FileVersion
+$tag = "v$version"
+Write-Output "Built $tag"
+
+$headers = @{ 'User-Agent' = 'eeeMail-release-check' }
+$previous = Invoke-RestMethod "https://api.github.com/repos/$Repository/releases/latest" -Headers $headers
+$previousVersion = [version]($previous.tag_name -replace '^[vV]', '')
+if ($version -le $previousVersion) {
+    throw "$tag is not newer than the latest release $($previous.tag_name). Check the system clock."
 }
 
-$bumped = $version -ne $current
-if ($bumped) { Set-ProjectVersion $version }
-
-try {
-    $out = '.scratch\release'
-    Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Output 'Publishing self-contained build...'
-    dotnet publish $ProjectPath -c Release -p:PublishSingleFile=true -o "$out\publish" --nologo -v quiet
-    if ($LASTEXITCODE -ne 0) { throw 'Publish failed.' }
-
-    $exe = "$out\publish\eeeMail.exe"
-    $built = (Get-Item $exe).VersionInfo.ProductVersion
-    if (-not $built.StartsWith("$version")) { throw "Built $built, expected $version." }
-}
-catch {
-    # Leave the project as it was, so a failed release changes nothing.
-    if ($bumped) { git checkout -- $ProjectPath }
-    throw
-}
-
-if ($bumped) {
-    git commit -q -m "Release $tag" -- $ProjectPath
-    if ($LASTEXITCODE -ne 0) { throw 'Committing the version bump failed.' }
-}
 $commit = (git rev-parse HEAD).Trim()
-
 Write-Output "Pushing $($commit.Substring(0, 7))..."
 git push -q origin HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Push failed; not releasing.' }
@@ -125,8 +87,7 @@ gh release create $tag $zip --repo $Repository --target $commit --title "eeeMail
 if ($LASTEXITCODE -ne 0) { throw 'gh release create failed.' }
 
 # Read it back exactly as the consumers do.
-$latest = Invoke-RestMethod "https://api.github.com/repos/$Repository/releases/latest" `
-    -Headers @{ 'User-Agent' = 'eeeMail-release-check' }
+$latest = Invoke-RestMethod "https://api.github.com/repos/$Repository/releases/latest" -Headers $headers
 $asset = $latest.assets | Where-Object { $_.name -like "*$AssetSuffix" } | Select-Object -First 1
 
 $problems = @()
